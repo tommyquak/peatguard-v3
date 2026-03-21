@@ -1,0 +1,85 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "peatguard"
+version = "0.1.0"
+description = "Satellite-based peatland monitoring pipeline for carbon credit MRV"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+
+dependencies = [
+    # Geospatial core
+    "rasterio>=1.3.0",
+    "rioxarray>=0.15.0",
+    "geopandas>=0.14.0",
+    "shapely>=2.0.0",
+    "fiona>=1.9.0",
+    "pyproj>=3.6.0",
+    "xarray>=2024.1.0",
+
+    # Scientific computing
+    "numpy>=1.26.0",
+    "scipy>=1.12.0",
+    "pandas>=2.1.0",
+    "scikit-image>=0.22.0",
+
+    # Data access
+    "asf_search>=7.0.0",
+    "earthaccess>=0.9.0",
+
+    # Configuration and utilities
+    "pydantic>=2.5.0",
+    "pydantic-settings>=2.1.0",
+    "pyyaml>=6.0",
+    "click>=8.1.0",
+    "tqdm>=4.66.0",
+    "requests>=2.31.0",
+
+    # Visualization
+    "matplotlib>=3.8.0",
+
+    # Cloud
+    "google-cloud-storage>=2.14.0",
+    "google-cloud-run>=0.10.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-cov>=4.1.0",
+    "black>=24.0.0",
+    "ruff>=0.2.0",
+]
+mintpy = [
+    "mintpy>=1.5.0",
+]
+jupyter = [
+    "jupyterlab>=4.0.0",
+    "notebook>=7.0.0",
+]
+
+[project.scripts]
+peatguard = "peatguard.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+peatguard = ["data/*.yaml"]
+
+[tool.black]
+line-length = 100
+target-version = ["py310"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v --tb=short"

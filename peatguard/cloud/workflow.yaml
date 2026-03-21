@@ -1,0 +1,174 @@
+main:
+  steps:
+    - init:
+        assign:
+          - project_id: ${sys.get_env("GOOGLE_CLOUD_PROJECT_ID")}
+          - region: "asia-southeast1"
+          - job_prefix: "peatguard"
+          - base_url: ${"https://" + region + "-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/" + project_id}
+
+    - trigger_ingest:
+        call: http.post
+        args:
+          url: ${base_url + "/jobs/" + job_prefix + "-ingest:run"}
+          auth:
+            type: OAuth2
+        result: ingest_response
+
+    - extract_ingest_exec:
+        assign:
+          - ingest_exec_name: ${ingest_response.body.metadata.name}
+
+    - wait_ingest:
+        call: poll_job_completion
+        args:
+          base_url: ${base_url}
+          execution_name: ${ingest_exec_name}
+          max_polls: 960
+        result: ingest_status
+
+    - check_ingest:
+        switch:
+          - condition: ${ingest_status != "SUCCEEDED"}
+            raise: ${"Ingest job failed with status " + ingest_status}
+
+    - trigger_insar:
+        call: http.post
+        args:
+          url: ${base_url + "/jobs/" + job_prefix + "-insar:run"}
+          auth:
+            type: OAuth2
+        result: insar_response
+
+    - extract_insar_exec:
+        assign:
+          - insar_exec_name: ${insar_response.body.metadata.name}
+
+    - wait_insar:
+        call: poll_job_completion
+        args:
+          base_url: ${base_url}
+          execution_name: ${insar_exec_name}
+          max_polls: 960
+        result: insar_status
+
+    - check_insar:
+        switch:
+          - condition: ${insar_status != "SUCCEEDED"}
+            raise: ${"InSAR job failed with status " + insar_status}
+
+    - trigger_timeseries:
+        call: http.post
+        args:
+          url: ${base_url + "/jobs/" + job_prefix + "-timeseries:run"}
+          auth:
+            type: OAuth2
+        result: timeseries_response
+
+    - extract_timeseries_exec:
+        assign:
+          - timeseries_exec_name: ${timeseries_response.body.metadata.name}
+
+    - wait_timeseries:
+        call: poll_job_completion
+        args:
+          base_url: ${base_url}
+          execution_name: ${timeseries_exec_name}
+          max_polls: 480
+        result: timeseries_status
+
+    - check_timeseries:
+        switch:
+          - condition: ${timeseries_status != "SUCCEEDED"}
+            raise: ${"Timeseries job failed with status " + timeseries_status}
+
+    - trigger_analyze:
+        call: http.post
+        args:
+          url: ${base_url + "/jobs/" + job_prefix + "-analyze:run"}
+          auth:
+            type: OAuth2
+        result: analyze_response
+
+    - extract_analyze_exec:
+        assign:
+          - analyze_exec_name: ${analyze_response.body.metadata.name}
+
+    - wait_analyze:
+        call: poll_job_completion
+        args:
+          base_url: ${base_url}
+          execution_name: ${analyze_exec_name}
+          max_polls: 240
+        result: analyze_status
+
+    - check_analyze:
+        switch:
+          - condition: ${analyze_status != "SUCCEEDED"}
+            raise: ${"Analyze job failed with status " + analyze_status}
+
+    - done:
+        return: "Pipeline completed successfully"
+
+poll_job_completion:
+  params:
+    - base_url
+    - execution_name
+    - max_polls
+  steps:
+    - init_counter:
+        assign:
+          - poll_count: 0
+
+    - poll_loop:
+        try:
+          steps:
+            - get_execution:
+                call: http.get
+                args:
+                  url: ${base_url + "/executions/" + execution_name}
+                  auth:
+                    type: OAuth2
+                result: execution_response
+
+            - check_completion:
+                switch:
+                  - condition: ${execution_response.body.status.completionTime != null}
+                    steps:
+                      - check_succeeded:
+                          switch:
+                            - condition: ${execution_response.body.status.succeededCount > 0}
+                              return: "SUCCEEDED"
+                            - condition: true
+                              return: "FAILED"
+                  - condition: ${poll_count >= max_polls}
+                    return: "TIMEOUT"
+                  - condition: true
+                    steps:
+                      - increment:
+                          assign:
+                            - poll_count: ${poll_count + 1}
+                      - wait:
+                          call: sys.sleep
+                          args:
+                            seconds: 30
+                      - continue_polling:
+                          raise: "still_running"
+        retry:
+          predicate: ${retry_if_running}
+          max_retries: 960
+          backoff:
+            initial_delay: 0
+            max_delay: 0
+            multiplier: 1
+
+retry_if_running:
+  params:
+    - e
+  steps:
+    - check:
+        switch:
+          - condition: ${e.message == "still_running"}
+            return: true
+          - condition: true
+            return: false

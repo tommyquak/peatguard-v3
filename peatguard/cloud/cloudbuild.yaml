@@ -1,0 +1,28 @@
+# Cloud Build configuration for PeatGuard Docker image
+# Builds and pushes to Artifact Registry
+
+steps:
+  # Build the Docker image
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'build'
+      - '-t'
+      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/peatguard/pipeline:${SHORT_SHA}'
+      - '-t'
+      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/peatguard/pipeline:latest'
+      - '.'
+
+  # Push both tags
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', '--all-tags', '${_REGION}-docker.pkg.dev/${PROJECT_ID}/peatguard/pipeline']
+
+substitutions:
+  _REGION: asia-southeast1
+
+images:
+  - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/peatguard/pipeline:${SHORT_SHA}'
+  - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/peatguard/pipeline:latest'
+
+options:
+  machineType: 'E2_HIGHCPU_8'
+  logging: CLOUD_LOGGING_ONLY

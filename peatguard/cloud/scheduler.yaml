@@ -1,0 +1,24 @@
+# Cloud Scheduler configuration for automated pipeline triggers
+#
+# Sentinel-1 has a 12-day repeat cycle. This scheduler triggers
+# the ingest job every 12 days to check for new acquisitions.
+#
+# Setup:
+#   gcloud scheduler jobs create http peatguard-trigger \
+#     --schedule="0 6 */12 * *" \
+#     --uri="https://REGION-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/PROJECT_ID/jobs/peatguard-ingest:run" \
+#     --http-method=POST \
+#     --oauth-service-account-email=peatguard-sa@PROJECT_ID.iam.gserviceaccount.com \
+#     --location=asia-southeast1 \
+#     --time-zone="Asia/Jakarta" \
+#     --description="Trigger PeatGuard pipeline on Sentinel-1 acquisition cycle"
+
+name: peatguard-trigger
+schedule: "0 6 */12 * *"
+timeZone: "Asia/Jakarta"
+description: "Trigger PeatGuard ingest job every 12 days (Sentinel-1 repeat cycle)"
+httpTarget:
+  uri: "https://asia-southeast1-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/PROJECT_ID/jobs/peatguard-ingest:run"
+  httpMethod: POST
+  oauthToken:
+    serviceAccountEmail: "peatguard-sa@PROJECT_ID.iam.gserviceaccount.com"

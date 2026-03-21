@@ -1,0 +1,37 @@
+version: "3.8"
+
+services:
+  peatguard:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - ./data:/workspace/data
+      - ./output:/workspace/output
+      - ./config:/workspace/config
+      - ${HOME}/.netrc:/root/.netrc:ro
+    environment:
+      - PEATGUARD_STORAGE_OUTPUT_DIR=/workspace/output
+      - PEATGUARD_STORAGE_SCRATCH_DIR=/workspace/scratch
+      - PEATGUARD_STORAGE_CATALOG_DB=/workspace/catalog.db
+    working_dir: /workspace
+    entrypoint: ["peatguard"]
+    command: ["--help"]
+
+  jupyter:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - ./data:/workspace/data
+      - ./output:/workspace/output
+      - ./config:/workspace/config
+      - ./notebooks:/workspace/notebooks
+      - ${HOME}/.netrc:/root/.netrc:ro
+    ports:
+      - "8888:8888"
+    environment:
+      - PEATGUARD_STORAGE_OUTPUT_DIR=/workspace/output
+      - PEATGUARD_STORAGE_SCRATCH_DIR=/workspace/scratch
+    entrypoint: ["jupyter", "lab"]
+    command: ["--ip=0.0.0.0", "--port=8888", "--no-browser", "--allow-root"]

@@ -1,0 +1,57 @@
+# PeatGuard Pipeline Configuration
+# Default settings for peatland monitoring
+
+aoi:
+  # Kapuas River peatland, West Kalimantan, Indonesia
+  bbox: [114.304, -2.611, 114.404, -2.511]  # [west, south, east, north]
+  epsg: 32649  # UTM Zone 49S
+
+sentinel1:
+  platform: SENTINEL-1
+  polarization: VV
+  subswath: IW2
+  processing_level_slc: SLC
+  processing_level_grd: GRD_HD
+  beam_mode: IW
+  min_temporal_gap_days: 14
+  max_temporal_baseline_days: 48
+
+processing:
+  resolution_m: 10.0
+  coherence_threshold: 0.3
+  wavelength_m: 0.056
+  incidence_deg: 37.0
+  dem_source: SRTM  # SRTM 1-arc-second
+  speckle_filter: lee_sigma
+  speckle_window_size: 7
+  goldstein_alpha: 0.8
+  snaphu_cost_mode: DEFO
+
+classification:
+  # Subsidence velocity thresholds (mm/yr)
+  severe_threshold: -50.0
+  active_drying_threshold: -20.0
+  stable_threshold: 0.0
+
+export:
+  cog_blocksize: 512
+  cog_compression: DEFLATE
+  overview_levels: [2, 4, 8, 16]
+  nodata: -9999.0
+
+storage:
+  # Local paths (overridden by environment variables for cloud)
+  output_dir: ./output
+  scratch_dir: ./scratch
+  catalog_db: ./catalog.db
+  # GCS settings
+  gcs_bucket: ""
+  gcs_prefix: peatguard-data
+
+mintpy:
+  reference_lalo: [-2.496900, 114.312148]  # Stable reference point
+  tropospheric_correction: ERA5
+  unwrap_error_correction: bridging+phase_closure
+  network_modification:
+    coherence_based: true
+    min_coherence: 0.3

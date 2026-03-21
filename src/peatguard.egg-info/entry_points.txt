@@ -1,0 +1,2 @@
+[console_scripts]
+peatguard = peatguard.cli:main
