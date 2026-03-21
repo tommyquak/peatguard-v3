@@ -99,21 +99,30 @@ def _interpolate_lut(lut: dict, height: int, width: int) -> np.ndarray:
                 pixels, np.linspace(0, width - 1, len(values)), values
             )
 
-    # Interpolate to full image dimensions
-    interp = RegularGridInterpolator(
-        (lines.astype(float), pixels.astype(float)),
-        lut_grid,
-        method="linear",
-        bounds_error=False,
-        fill_value=None,
-    )
+    # Interpolate to full image dimensions row-by-row to save memory.
+    # The meshgrid approach allocates ~10GB for a full IW GRD; this uses ~100KB.
+    result = np.zeros((height, width), dtype=np.float32)
+    col_coords = np.arange(width, dtype=np.float64)
 
-    row_coords = np.arange(height, dtype=float)
-    col_coords = np.arange(width, dtype=float)
-    row_grid, col_grid = np.meshgrid(row_coords, col_coords, indexing="ij")
-    points = np.stack([row_grid.ravel(), col_grid.ravel()], axis=-1)
+    for row in range(height):
+        # Find the two bounding LUT lines for this row
+        row_f = float(row)
+        idx = np.searchsorted(lines, row_f, side="right") - 1
+        idx = np.clip(idx, 0, len(lines) - 2)
 
-    return interp(points).reshape(height, width)
+        line0, line1 = float(lines[idx]), float(lines[idx + 1])
+        frac = (row_f - line0) / max(line1 - line0, 1e-6)
+        frac = np.clip(frac, 0.0, 1.0)
+
+        # Interpolate the LUT values at sparse pixel positions
+        vals0 = lut_grid[idx]
+        vals1 = lut_grid[idx + 1]
+        interp_vals = vals0 * (1 - frac) + vals1 * frac
+
+        # Interpolate across columns to full width
+        result[row] = np.interp(col_coords, pixels.astype(np.float64), interp_vals).astype(np.float32)
+
+    return result
 
 
 def _find_calibration_xml(safe_path: Path, polarization: str = "vv") -> str:

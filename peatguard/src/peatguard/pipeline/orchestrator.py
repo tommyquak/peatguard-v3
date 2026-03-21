@@ -10,6 +10,7 @@ pairs to complete.
 from __future__ import annotations
 
 import logging
+import shutil
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Optional
@@ -668,14 +669,43 @@ def run_backscatter_stage(
         logger.info("Processing GRD %d/%d: %s", i, len(grd_paths), grd_path.name)
         stem = grd_path.stem
 
+        # Download from GCS if the file doesn't exist locally (on-demand)
+        if not grd_path.exists() and config.storage.gcs_bucket:
+            from peatguard.export.gcs import download_file, list_blobs
+            # Search both raw/grd/ and raw/slc/ for this file
+            for prefix in ["raw/grd/", "raw/slc/"]:
+                blobs = list_blobs(config.storage.gcs_bucket, prefix + grd_path.name)
+                if blobs:
+                    grd_path.parent.mkdir(parents=True, exist_ok=True)
+                    download_file(config.storage.gcs_bucket, blobs[0], grd_path)
+                    logger.info("Downloaded %s from GCS (%s)", grd_path.name, prefix)
+                    break
+
         cal_path = scratch / "calibrated" / f"{stem}_sigma0.tif"
         filt_path = scratch / "filtered" / f"{stem}_filtered.tif"
         geo_path = scratch / "geocoded" / f"{stem}_geocoded.tif"
 
-        calibrate_grd(grd_path, cal_path, polarization=config.sentinel1.polarization.lower())
-        apply_speckle_filter(cal_path, filt_path, window_size=config.processing.speckle_window_size)
-        terrain_correct(filt_path, geo_path, target_crs=config.aoi.epsg, resolution_m=config.processing.resolution_m)
-        geocoded_paths.append(geo_path)
+        try:
+            calibrate_grd(grd_path, cal_path, polarization=config.sentinel1.polarization.lower())
+            apply_speckle_filter(cal_path, filt_path, window_size=config.processing.speckle_window_size)
+            terrain_correct(filt_path, geo_path, target_crs=config.aoi.epsg, resolution_m=config.processing.resolution_m)
+            geocoded_paths.append(geo_path)
+        except Exception as exc:
+            logger.error("Failed to process GRD %s: %s", grd_path.name, exc)
+        finally:
+            # Aggressively clean up ALL intermediates to free RAM-backed disk
+            import gc
+            for p in [grd_path, cal_path, filt_path]:
+                if p.exists():
+                    p.unlink(missing_ok=True)
+            # Remove extracted SAFE directory and temp extraction dirs
+            safe_dir = grd_path.with_suffix(".SAFE")
+            if safe_dir.exists():
+                shutil.rmtree(str(safe_dir), ignore_errors=True)
+            for tmp_dir in grd_path.parent.glob("_*_tmp"):
+                shutil.rmtree(str(tmp_dir), ignore_errors=True)
+            gc.collect()
+            logger.info("Cleaned up intermediates for GRD %d/%d", i, len(grd_paths))
 
     # Create median composite
     composite_path = config.storage.output_dir / "vv_median.tif"
@@ -684,6 +714,18 @@ def run_backscatter_stage(
     # Also produce dB version
     db_path = config.storage.output_dir / "vv_median_db.tif"
     to_decibels(composite_path, db_path)
+
+    # Upload composites to GCS
+    if config.storage.gcs_bucket:
+        from peatguard.export.gcs import upload_file
+        for path in [composite_path, db_path]:
+            if path.exists():
+                blob_name = f"products/{path.name}"
+                try:
+                    upload_file(path, config.storage.gcs_bucket, blob_name)
+                    logger.info("Uploaded %s to gs://%s/%s", path.name, config.storage.gcs_bucket, blob_name)
+                except Exception as exc:
+                    logger.warning("Failed to upload %s: %s", path.name, exc)
 
     return composite_path
 

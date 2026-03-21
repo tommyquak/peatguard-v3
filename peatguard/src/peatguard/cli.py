@@ -110,17 +110,21 @@ def _discover_grd_paths(config) -> list[Path]:
     local_grd_dir.mkdir(parents=True, exist_ok=True)
 
     if config.storage.gcs_bucket:
-        from peatguard.export.gcs import sync_from_gcs
+        from peatguard.export.gcs import list_blobs
 
-        logger.info("Syncing GRD files from GCS bucket: %s", config.storage.gcs_bucket)
-        paths = sync_from_gcs(
-            bucket_name=config.storage.gcs_bucket,
-            prefix="raw/grd/",
-            local_dir=local_grd_dir,
-            suffix=".zip",
-        )
-        if paths:
-            return sorted(paths)
+        # Create placeholder paths for GRD files in GCS (downloaded on-demand
+        # by the backscatter stage to avoid OOM from bulk download).
+        for prefix in ["raw/grd/", "raw/slc/"]:
+            blob_names = list_blobs(config.storage.gcs_bucket, prefix, suffix=".zip")
+            grd_blobs = [b for b in blob_names if "GRDH" in b or "GRD" in b]
+            if grd_blobs:
+                paths = []
+                for blob in grd_blobs:
+                    filename = blob.split("/")[-1]
+                    paths.append(local_grd_dir / filename)
+                logger.info("Found %d GRD files in gs://%s/%s (will download per-scene)",
+                            len(paths), config.storage.gcs_bucket, prefix)
+                return sorted(paths)
 
     # Priority 3: Local scan
     local_paths = sorted(local_grd_dir.glob("S1*.zip"))
@@ -245,6 +249,13 @@ def analyze(ctx: click.Context) -> None:
         sys.exit(1)
 
     # VV backscatter is optional (canal detection + risk scoring need it)
+    # Try downloading from GCS if not available locally
+    if not vv_path.exists() and config.storage.gcs_bucket:
+        try:
+            download_file(config.storage.gcs_bucket, "products/vv_median.tif", vv_path)
+            click.echo("Downloaded VV composite from GCS")
+        except Exception:
+            pass
     vv = vv_path if vv_path.exists() else None
     if not vv:
         click.echo("VV composite not found -- skipping canal detection and risk scoring")
