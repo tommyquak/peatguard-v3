@@ -106,12 +106,18 @@ def apply_speckle_filter(
     with rasterio.open(input_path) as src:
         data = src.read(1)
         profile = src.profile.copy()
+        gcps = src.gcps
 
     filtered = lee_sigma_filter(data, window_size=window_size, sigma_factor=sigma_factor)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with rasterio.open(output_path, "w", **profile) as dst:
         dst.write(filtered, 1)
+
+    # Preserve GCPs for geocoding downstream
+    if gcps and len(gcps[0]) > 0:
+        with rasterio.open(output_path, "r+") as dst:
+            dst.gcps = gcps
 
     logger.info("Filtered output: %s", output_path.name)
     return output_path

@@ -253,5 +253,13 @@ def calibrate_grd(
         dst.write(sigma0.astype(np.float32), 1)
         dst.set_band_description(1, f"sigma0_{polarization}")
 
+    # Preserve GCPs from the source TIFF for geocoding downstream
+    with rasterio.open(meas_tiff) as src:
+        gcps = src.gcps
+        if gcps and len(gcps[0]) > 0:
+            with rasterio.open(output_path, "r+") as dst:
+                dst.gcps = gcps
+            logger.info("Preserved %d GCPs for geocoding", len(gcps[0]))
+
     logger.info("Calibrated output: %s", output_path.name)
     return output_path

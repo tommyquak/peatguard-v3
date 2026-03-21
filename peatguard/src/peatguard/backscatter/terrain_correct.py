@@ -61,24 +61,45 @@ def terrain_correct(
     dst_crs = CRS.from_epsg(target_crs) if isinstance(target_crs, int) else CRS.from_user_input(target_crs)
 
     with rasterio.open(input_path) as src:
-        # Calculate the optimal output transform
-        if bounds is not None:
+        # Sentinel-1 GRD TIFFs use GCPs for geolocation instead of an
+        # affine transform. Detect this and use GCP-aware reprojection.
+        src_crs = src.crs
+        src_transform = src.transform
+        gcps = src.gcps
+        has_gcps = gcps and len(gcps[0]) > 0
+
+        if has_gcps:
+            gcp_list, gcp_crs = gcps
+            src_crs = gcp_crs or CRS.from_epsg(4326)
+            logger.info("Source has %d GCPs, using GCP-aware reprojection", len(gcp_list))
+
+            # Derive geographic bounds from GCPs
+            gcp_lons = [g.x for g in gcp_list]
+            gcp_lats = [g.y for g in gcp_list]
+            gcp_bounds = (min(gcp_lons), min(gcp_lats), max(gcp_lons), max(gcp_lats))
+
             dst_transform, dst_width, dst_height = calculate_default_transform(
-                src.crs,
-                dst_crs,
-                src.width,
-                src.height,
-                *bounds,
-                resolution=resolution_m,
+                src_crs, dst_crs, src.width, src.height,
+                *gcp_bounds, resolution=resolution_m,
+            )
+
+            # Build an intermediate VRT with GCPs applied as a polynomial transform
+            from rasterio.transform import from_gcps
+            src_transform = from_gcps(gcp_list)
+
+        elif bounds is not None:
+            dst_transform, dst_width, dst_height = calculate_default_transform(
+                src_crs, dst_crs, src.width, src.height,
+                *bounds, resolution=resolution_m,
             )
         else:
+            # Check if the source has a valid (non-identity) transform
+            if src.transform.is_identity or (src.transform.a == 1 and src.transform.e == -1):
+                logger.warning("Source has no geolocation (identity transform). "
+                               "Output will not be properly georeferenced.")
             dst_transform, dst_width, dst_height = calculate_default_transform(
-                src.crs,
-                dst_crs,
-                src.width,
-                src.height,
-                *src.bounds,
-                resolution=resolution_m,
+                src_crs, dst_crs, src.width, src.height,
+                *src.bounds, resolution=resolution_m,
             )
 
         profile = src.profile.copy()
@@ -89,20 +110,34 @@ def terrain_correct(
             height=dst_height,
             driver="GTiff",
         )
+        # Remove GCPs from output profile (we're using affine transform now)
+        profile.pop("gcps", None)
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
         with rasterio.open(output_path, "w", **profile) as dst:
             for band_idx in range(1, src.count + 1):
-                reproject(
-                    source=rasterio.band(src, band_idx),
-                    destination=rasterio.band(dst, band_idx),
-                    src_transform=src.transform,
-                    src_crs=src.crs,
-                    dst_transform=dst_transform,
-                    dst_crs=dst_crs,
-                    resampling=resampling,
-                )
+                if has_gcps:
+                    # For GCP sources, use rpcs or GCP-derived transform
+                    reproject(
+                        source=rasterio.band(src, band_idx),
+                        destination=rasterio.band(dst, band_idx),
+                        src_crs=src_crs,
+                        gcps=gcps[0] if has_gcps else None,
+                        dst_transform=dst_transform,
+                        dst_crs=dst_crs,
+                        resampling=resampling,
+                    )
+                else:
+                    reproject(
+                        source=rasterio.band(src, band_idx),
+                        destination=rasterio.band(dst, band_idx),
+                        src_transform=src_transform,
+                        src_crs=src_crs,
+                        dst_transform=dst_transform,
+                        dst_crs=dst_crs,
+                        resampling=resampling,
+                    )
 
     logger.info("Geocoded output: %s (%dx%d)", output_path.name, dst_width, dst_height)
     return output_path

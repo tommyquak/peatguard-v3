@@ -137,8 +137,10 @@ def export_velocity(
     h, w = velocity_m_yr.shape
     transform, crs = _get_transform(attrs, mintpy_dir=mintpy_dir, config=config, height=h, width=w)
 
-    # Convert m/yr to mm/yr
+    # Convert m/yr to mm/yr and clamp extreme outliers
     velocity_mm_yr = velocity_m_yr * 1000.0
+    valid_mask = np.isfinite(velocity_mm_yr)
+    velocity_mm_yr[valid_mask] = np.clip(velocity_mm_yr[valid_mask], -200.0, 200.0)
 
     # Read velocity uncertainty if available
     velocity_std = None

@@ -181,15 +181,22 @@ def run_insar_stage(
     # Build date -> zip_path mapping without extracting yet
     logger.info("Building SLC date index from %d files", len(slc_paths))
 
-    # Extract dates from filenames (no extraction yet -- just indexing)
+    # Extract dates from filenames (no extraction yet -- just indexing).
+    # Filter to SLC files only -- GRD files may be mixed in the same directory
+    # (known issue: GRD download saves to raw/slc/ instead of raw/grd/).
     dates = []
     date_to_zip = {}  # date -> original zip/safe path
     for path in sorted(slc_paths):
-        name_str = str(path.name).replace(".SAFE", "").replace(".zip", "")
+        name_str = str(path.name)
+        # Skip GRD files -- they can't be used for InSAR
+        if "GRDH" in name_str or "GRD" in name_str:
+            continue
+        name_str = name_str.replace(".SAFE", "").replace(".zip", "")
         for part in name_str.split("_"):
             if len(part) >= 8 and part[:8].isdigit():
                 date_str = f"{part[:4]}-{part[4:6]}-{part[6:8]}"
-                dates.append(date_str)
+                if date_str not in date_to_zip:  # avoid duplicates
+                    dates.append(date_str)
                 date_to_zip[date_str] = path
                 break
 
