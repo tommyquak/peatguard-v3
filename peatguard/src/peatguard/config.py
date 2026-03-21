@@ -41,7 +41,7 @@ class Sentinel1Config(BaseModel):
 
     platform: str = "SENTINEL-1"
     polarization: str = "VV"
-    subswath: str = "IW2"
+    subswath: str = "IW3"
     processing_level_slc: str = "SLC"
     processing_level_grd: str = "GRD_HD"
     beam_mode: str = "IW"

@@ -117,27 +117,15 @@ def terrain_correct(
 
         with rasterio.open(output_path, "w", **profile) as dst:
             for band_idx in range(1, src.count + 1):
-                if has_gcps:
-                    # For GCP sources, use rpcs or GCP-derived transform
-                    reproject(
-                        source=rasterio.band(src, band_idx),
-                        destination=rasterio.band(dst, band_idx),
-                        src_crs=src_crs,
-                        gcps=gcps[0] if has_gcps else None,
-                        dst_transform=dst_transform,
-                        dst_crs=dst_crs,
-                        resampling=resampling,
-                    )
-                else:
-                    reproject(
-                        source=rasterio.band(src, band_idx),
-                        destination=rasterio.band(dst, band_idx),
-                        src_transform=src_transform,
-                        src_crs=src_crs,
-                        dst_transform=dst_transform,
-                        dst_crs=dst_crs,
-                        resampling=resampling,
-                    )
+                reproject(
+                    source=rasterio.band(src, band_idx),
+                    destination=rasterio.band(dst, band_idx),
+                    src_transform=src_transform,
+                    src_crs=src_crs,
+                    dst_transform=dst_transform,
+                    dst_crs=dst_crs,
+                    resampling=resampling,
+                )
 
     logger.info("Geocoded output: %s (%dx%d)", output_path.name, dst_width, dst_height)
     return output_path

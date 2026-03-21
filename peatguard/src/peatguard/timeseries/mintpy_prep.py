@@ -239,22 +239,27 @@ def prep_data_for_mintpy(
             unw_path = pair_dir / "filt_topophase.unw"
             if unw_path.exists():
                 data = np.fromfile(str(unw_path), dtype=np.float32)
+                expected = length * width * 2
+                data = data[:expected]  # trim trailing bytes if any
                 data = data.reshape(length, width * 2)
-                # Band 2 is phase (band 1 is amplitude)
-                unw_dset[i] = data[:, width:]
+                unw_dset[i] = data[:, width:]  # Band 2 is phase
             else:
                 logger.warning("Missing unw for %s_%s", ref_date, sec_date)
 
-            # Read coherence
+            # Read coherence (single band float32)
             cor_path = pair_dir / "phsig.cor"
             if cor_path.exists():
                 data = np.fromfile(str(cor_path), dtype=np.float32)
+                expected = length * width
+                data = data[:expected]
                 cor_dset[i] = data.reshape(length, width)
 
-            # Read connected components
+            # Read connected components (byte format, trim to expected size)
             conn_path = pair_dir / "filt_topophase.unw.conncomp"
             if conn_path.exists():
                 data = np.fromfile(str(conn_path), dtype=np.uint8)
+                expected = length * width
+                data = data[:expected]
                 conn_dset[i] = data.reshape(length, width).astype(np.int16)
 
             date12[i] = [ref_date.encode(), sec_date.encode()]

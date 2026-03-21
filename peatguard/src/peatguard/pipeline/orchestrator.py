@@ -429,10 +429,17 @@ def _merge_burst_geometry(
             import xml.etree.ElementTree as ET
             tree = ET.parse(str(xml_path))
             for prop in tree.iter("property"):
-                if prop.get("name") == "width":
-                    width = int(prop.find("value").text)
-                elif prop.get("name") == "number_bands":
-                    n_bands = int(prop.find("value").text)
+                name = prop.get("name", "")
+                val_elem = prop.find("value")
+                if val_elem is None or val_elem.text is None:
+                    continue
+                if name == "width":
+                    width = int(val_elem.text)
+                elif name == "number_bands":
+                    n_bands = int(val_elem.text)
+        if width is None:
+            logger.warning("Could not parse width for %s, skipping", geom_name)
+            continue
 
         # Determine data type (lat/lon are float64 in ISCE2)
         dtype = np.float64 if geom_name in ("lat", "lon") else np.float32
