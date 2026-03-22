@@ -1,3 +1,27 @@
+# PeatGuard Monthly Reprocessing Workflow
+# Google Cloud Workflows definition for sequential pipeline execution.
+#
+# Triggered by Cloud Scheduler on the 1st of each month.
+# Processes the previous month's Sentinel-1 acquisitions through all 5 stages:
+#   ingest -> (insar + backscatter in parallel) -> timeseries -> analyze
+#
+# Deploy:
+#   gcloud workflows deploy peatguard-monthly \
+#     --source=cloud/workflow.yaml \
+#     --location=asia-southeast1 \
+#     --service-account=peatguard-sa@peatguard.iam.gserviceaccount.com \
+#     --project=peatguard
+#
+# Manual trigger:
+#   gcloud workflows run peatguard-monthly \
+#     --location=asia-southeast1 \
+#     --project=peatguard
+#
+# The workflow accepts no runtime arguments. Date range (previous month) is
+# computed automatically from the execution timestamp. Cloud Run Jobs read
+# their date overrides from environment variables set at job-update time;
+# see scheduler-setup.sh for the update-then-execute pattern.
+
 main:
   steps:
     - init:
@@ -6,7 +30,17 @@ main:
           - region: "asia-southeast1"
           - job_prefix: "peatguard"
           - base_url: ${"https://" + region + "-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/" + project_id}
+          - run_id: ${sys.get_env("GOOGLE_CLOUD_WORKFLOW_EXECUTION_ID")}
 
+    - log_start:
+        call: sys.log
+        args:
+          text: ${"PeatGuard monthly pipeline started. Execution " + run_id}
+          severity: INFO
+
+    # ---------------------------------------------------------------
+    # Stage 1: Ingest -- download new Sentinel-1 SLC + GRD scenes
+    # ---------------------------------------------------------------
     - trigger_ingest:
         call: http.post
         args:
@@ -19,6 +53,12 @@ main:
         assign:
           - ingest_exec_name: ${ingest_response.body.metadata.name}
 
+    - log_ingest_started:
+        call: sys.log
+        args:
+          text: ${"Ingest job started: " + ingest_exec_name}
+          severity: INFO
+
     - wait_ingest:
         call: poll_job_completion
         args:
@@ -30,33 +70,126 @@ main:
     - check_ingest:
         switch:
           - condition: ${ingest_status != "SUCCEEDED"}
-            raise: ${"Ingest job failed with status " + ingest_status}
+            steps:
+              - log_ingest_failed:
+                  call: sys.log
+                  args:
+                    text: ${"PIPELINE FAILED at ingest stage. Status: " + ingest_status + ". Execution: " + run_id}
+                    severity: ERROR
+              - raise_ingest:
+                  raise: ${"Ingest job failed with status " + ingest_status}
 
-    - trigger_insar:
-        call: http.post
+    - log_ingest_done:
+        call: sys.log
         args:
-          url: ${base_url + "/jobs/" + job_prefix + "-insar:run"}
-          auth:
-            type: OAuth2
-        result: insar_response
+          text: "Ingest stage completed successfully"
+          severity: INFO
 
-    - extract_insar_exec:
-        assign:
-          - insar_exec_name: ${insar_response.body.metadata.name}
+    # ---------------------------------------------------------------
+    # Stage 2: InSAR + Backscatter (parallel)
+    # These two stages are independent and can run concurrently.
+    # InSAR processes SLC pairs; backscatter processes GRD scenes.
+    # ---------------------------------------------------------------
+    - parallel_processing:
+        parallel:
+          shared: [base_url, job_prefix, run_id]
+          branches:
+            - insar_branch:
+                steps:
+                  - trigger_insar:
+                      call: http.post
+                      args:
+                        url: ${base_url + "/jobs/" + job_prefix + "-insar:run"}
+                        auth:
+                          type: OAuth2
+                      result: insar_response
 
-    - wait_insar:
-        call: poll_job_completion
-        args:
-          base_url: ${base_url}
-          execution_name: ${insar_exec_name}
-          max_polls: 960
-        result: insar_status
+                  - extract_insar_exec:
+                      assign:
+                        - insar_exec_name: ${insar_response.body.metadata.name}
 
-    - check_insar:
-        switch:
-          - condition: ${insar_status != "SUCCEEDED"}
-            raise: ${"InSAR job failed with status " + insar_status}
+                  - log_insar_started:
+                      call: sys.log
+                      args:
+                        text: ${"InSAR job started: " + insar_exec_name}
+                        severity: INFO
 
+                  - wait_insar:
+                      call: poll_job_completion
+                      args:
+                        base_url: ${base_url}
+                        execution_name: ${insar_exec_name}
+                        max_polls: 960
+                      result: insar_status
+
+                  - check_insar:
+                      switch:
+                        - condition: ${insar_status != "SUCCEEDED"}
+                          steps:
+                            - log_insar_failed:
+                                call: sys.log
+                                args:
+                                  text: ${"PIPELINE FAILED at InSAR stage. Status: " + insar_status}
+                                  severity: ERROR
+                            - raise_insar:
+                                raise: ${"InSAR job failed with status " + insar_status}
+
+                  - log_insar_done:
+                      call: sys.log
+                      args:
+                        text: "InSAR stage completed successfully"
+                        severity: INFO
+
+            - backscatter_branch:
+                steps:
+                  - trigger_backscatter:
+                      call: http.post
+                      args:
+                        url: ${base_url + "/jobs/" + job_prefix + "-backscatter:run"}
+                        auth:
+                          type: OAuth2
+                      result: backscatter_response
+
+                  - extract_backscatter_exec:
+                      assign:
+                        - backscatter_exec_name: ${backscatter_response.body.metadata.name}
+
+                  - log_backscatter_started:
+                      call: sys.log
+                      args:
+                        text: ${"Backscatter job started: " + backscatter_exec_name}
+                        severity: INFO
+
+                  - wait_backscatter:
+                      call: poll_job_completion
+                      args:
+                        base_url: ${base_url}
+                        execution_name: ${backscatter_exec_name}
+                        max_polls: 480
+                      result: backscatter_status
+
+                  - check_backscatter:
+                      switch:
+                        - condition: ${backscatter_status != "SUCCEEDED"}
+                          steps:
+                            - log_backscatter_failed:
+                                call: sys.log
+                                args:
+                                  text: ${"PIPELINE FAILED at backscatter stage. Status: " + backscatter_status}
+                                  severity: ERROR
+                            - raise_backscatter:
+                                raise: ${"Backscatter job failed with status " + backscatter_status}
+
+                  - log_backscatter_done:
+                      call: sys.log
+                      args:
+                        text: "Backscatter stage completed successfully"
+                        severity: INFO
+
+    # ---------------------------------------------------------------
+    # Stage 3: Time-Series -- MintPy SBAS inversion
+    # Requires completed interferograms from InSAR stage.
+    # ---------------------------------------------------------------
     - trigger_timeseries:
         call: http.post
         args:
@@ -69,6 +202,12 @@ main:
         assign:
           - timeseries_exec_name: ${timeseries_response.body.metadata.name}
 
+    - log_timeseries_started:
+        call: sys.log
+        args:
+          text: ${"Timeseries job started: " + timeseries_exec_name}
+          severity: INFO
+
     - wait_timeseries:
         call: poll_job_completion
         args:
@@ -80,8 +219,25 @@ main:
     - check_timeseries:
         switch:
           - condition: ${timeseries_status != "SUCCEEDED"}
-            raise: ${"Timeseries job failed with status " + timeseries_status}
+            steps:
+              - log_timeseries_failed:
+                  call: sys.log
+                  args:
+                    text: ${"PIPELINE FAILED at timeseries stage. Status: " + timeseries_status}
+                    severity: ERROR
+              - raise_timeseries:
+                  raise: ${"Timeseries job failed with status " + timeseries_status}
 
+    - log_timeseries_done:
+        call: sys.log
+        args:
+          text: "Timeseries stage completed successfully"
+          severity: INFO
+
+    # ---------------------------------------------------------------
+    # Stage 4: Analysis -- classification + canal detection + risk
+    # Requires velocity from timeseries and VV composite from backscatter.
+    # ---------------------------------------------------------------
     - trigger_analyze:
         call: http.post
         args:
@@ -94,6 +250,12 @@ main:
         assign:
           - analyze_exec_name: ${analyze_response.body.metadata.name}
 
+    - log_analyze_started:
+        call: sys.log
+        args:
+          text: ${"Analyze job started: " + analyze_exec_name}
+          severity: INFO
+
     - wait_analyze:
         call: poll_job_completion
         args:
@@ -105,11 +267,33 @@ main:
     - check_analyze:
         switch:
           - condition: ${analyze_status != "SUCCEEDED"}
-            raise: ${"Analyze job failed with status " + analyze_status}
+            steps:
+              - log_analyze_failed:
+                  call: sys.log
+                  args:
+                    text: ${"PIPELINE FAILED at analyze stage. Status: " + analyze_status}
+                    severity: ERROR
+              - raise_analyze:
+                  raise: ${"Analyze job failed with status " + analyze_status}
+
+    # ---------------------------------------------------------------
+    # Done
+    # ---------------------------------------------------------------
+    - log_success:
+        call: sys.log
+        args:
+          text: ${"PeatGuard monthly pipeline completed successfully. Execution: " + run_id}
+          severity: INFO
 
     - done:
-        return: "Pipeline completed successfully"
+        return: ${"Pipeline completed successfully. Execution: " + run_id}
 
+
+# ---------------------------------------------------------------
+# Subworkflow: poll a Cloud Run Job execution until it completes.
+# Polls every 30 seconds, up to max_polls times.
+# Returns "SUCCEEDED", "FAILED", or "TIMEOUT".
+# ---------------------------------------------------------------
 poll_job_completion:
   params:
     - base_url
@@ -162,6 +346,10 @@ poll_job_completion:
             max_delay: 0
             multiplier: 1
 
+
+# ---------------------------------------------------------------
+# Retry predicate: only retry on "still_running" signals.
+# ---------------------------------------------------------------
 retry_if_running:
   params:
     - e

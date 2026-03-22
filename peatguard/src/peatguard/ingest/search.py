@@ -1,8 +1,9 @@
-"""Sentinel-1 scene discovery via ASF DAAC.
+"""SAR scene discovery via ASF DAAC.
 
 Uses asf_search as the primary interface to the Alaska Satellite Facility,
-which provides the most reliable access to Sentinel-1 SLC and GRD products.
-Falls back to earthaccess (NASA CMR) if ASF is unavailable.
+which provides the most reliable access to Sentinel-1 SLC/GRD and NISAR
+L-band SLC products. Falls back to earthaccess (NASA CMR) if ASF is
+unavailable.
 """
 
 from __future__ import annotations
@@ -18,6 +19,49 @@ from peatguard.config import PeatGuardConfig
 logger = logging.getLogger(__name__)
 
 
+def _search_sentinel1(
+    config: PeatGuardConfig,
+    start_date: str,
+    end_date: str,
+    processing_level: str,
+    max_results: Optional[int],
+) -> list[asf.ASFProduct]:
+    """Search ASF DAAC for Sentinel-1 scenes."""
+    west, south, east, north = config.aoi.bbox
+    return list(asf.search(
+        platform=asf.PLATFORM.SENTINEL1,
+        processingLevel=processing_level,
+        beamMode=asf.BEAMMODE.IW,
+        intersectsWith=f"POLYGON(({west} {south},{east} {south},{east} {north},{west} {north},{west} {south}))",
+        start=start_date,
+        end=end_date,
+        maxResults=max_results,
+    ))
+
+
+def _search_nisar(
+    config: PeatGuardConfig,
+    start_date: str,
+    end_date: str,
+    processing_level: str,
+    max_results: Optional[int],
+) -> list[asf.ASFProduct]:
+    """Search ASF DAAC for NISAR L-band scenes.
+
+    NISAR L-SAR SLC products are available from ASF since February 2026.
+    The platform keyword is 'NISAR' in asf_search.
+    """
+    west, south, east, north = config.aoi.bbox
+    return list(asf.search(
+        platform="NISAR",
+        processingLevel=processing_level,
+        intersectsWith=f"POLYGON(({west} {south},{east} {south},{east} {north},{west} {north},{west} {south}))",
+        start=start_date,
+        end=end_date,
+        maxResults=max_results,
+    ))
+
+
 def search_scenes(
     config: PeatGuardConfig,
     start_date: str,
@@ -25,7 +69,10 @@ def search_scenes(
     processing_level: str = "SLC",
     max_results: Optional[int] = None,
 ) -> list[asf.ASFProduct]:
-    """Search for Sentinel-1 scenes over the configured AOI.
+    """Search for SAR scenes over the configured AOI.
+
+    Routes to Sentinel-1 or NISAR search based on the active sensor
+    in the pipeline configuration.
 
     Args:
         config: Pipeline configuration.
@@ -38,10 +85,12 @@ def search_scenes(
         List of ASF product results sorted by acquisition date.
     """
     west, south, east, north = config.aoi.bbox
+    sensor_name = config.sensor
 
     logger.info(
-        "Searching ASF DAAC for %s scenes: bbox=[%.3f, %.3f, %.3f, %.3f], "
+        "Searching ASF DAAC for %s %s scenes: bbox=[%.3f, %.3f, %.3f, %.3f], "
         "dates=%s to %s",
+        sensor_name,
         processing_level,
         west,
         south,
@@ -51,17 +100,12 @@ def search_scenes(
         end_date,
     )
 
-    results = asf.search(
-        platform=asf.PLATFORM.SENTINEL1,
-        processingLevel=processing_level,
-        beamMode=asf.BEAMMODE.IW,
-        intersectsWith=f"POLYGON(({west} {south},{east} {south},{east} {north},{west} {north},{west} {south}))",
-        start=start_date,
-        end=end_date,
-        maxResults=max_results,
-    )
+    if config.is_nisar:
+        results = _search_nisar(config, start_date, end_date, processing_level, max_results)
+    else:
+        results = _search_sentinel1(config, start_date, end_date, processing_level, max_results)
 
-    logger.info("Found %d total scenes", len(results))
+    logger.info("Found %d total %s scenes", len(results), sensor_name)
     return sorted(results, key=lambda r: r.properties["startTime"])
 
 
@@ -181,9 +225,10 @@ def build_acquisition_stack(
 
     best_orbit = select_best_orbit(results)
 
+    sensor_cfg = config.active_sensor_config
     return filter_temporal_stack(
         results,
         orbit=best_orbit,
-        min_gap_days=config.sentinel1.min_temporal_gap_days,
+        min_gap_days=sensor_cfg.min_temporal_gap_days,
         max_scenes=max_scenes,
     )

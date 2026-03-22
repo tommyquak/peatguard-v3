@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PeatGuard Dashboard</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+        #map { width: 100%; height: 100vh; }
+
+        /* Header bar */
+        .header {
+            position: fixed;
+            top: 0; left: 0; right: 0;
+            z-index: 1000;
+            background: #1a1a2e;
+            color: #e0e0e0;
+            padding: 8px 16px;
+            font-size: 14px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+        }
+        .header h1 {
+            font-size: 16px;
+            font-weight: 600;
+            color: #ffffff;
+        }
+        .header .subtitle {
+            font-size: 12px;
+            color: #999;
+        }
+
+        /* Layer control panel */
+        .layer-panel {
+            position: fixed;
+            top: 48px; right: 10px;
+            z-index: 1000;
+            background: #ffffff;
+            border-radius: 6px;
+            box-shadow: 0 2px 12px rgba(0,0,0,0.2);
+            width: 280px;
+            max-height: calc(100vh - 68px);
+            overflow-y: auto;
+        }
+        .layer-panel-header {
+            padding: 10px 14px;
+            font-weight: 600;
+            font-size: 13px;
+            color: #333;
+            border-bottom: 1px solid #eee;
+            background: #f8f8f8;
+            border-radius: 6px 6px 0 0;
+        }
+        .layer-item {
+            padding: 8px 14px;
+            border-bottom: 1px solid #f0f0f0;
+            cursor: pointer;
+        }
+        .layer-item:hover {
+            background: #f5f7fa;
+        }
+        .layer-item label {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 13px;
+            color: #333;
+            cursor: pointer;
+        }
+        .layer-item input[type="checkbox"] {
+            accent-color: #2563eb;
+        }
+        .layer-desc {
+            font-size: 11px;
+            color: #888;
+            margin-top: 3px;
+            padding-left: 24px;
+        }
+
+        /* Legend */
+        .legend-panel {
+            position: fixed;
+            bottom: 20px; left: 10px;
+            z-index: 1000;
+            background: #ffffff;
+            border-radius: 6px;
+            box-shadow: 0 2px 12px rgba(0,0,0,0.2);
+            padding: 10px 14px;
+            min-width: 180px;
+            display: none;
+        }
+        .legend-title {
+            font-size: 12px;
+            font-weight: 600;
+            color: #333;
+            margin-bottom: 6px;
+        }
+        .legend-gradient {
+            height: 14px;
+            border-radius: 3px;
+            margin-bottom: 4px;
+        }
+        .legend-labels {
+            display: flex;
+            justify-content: space-between;
+            font-size: 10px;
+            color: #666;
+        }
+        .legend-categorical {
+            display: flex;
+            flex-direction: column;
+            gap: 3px;
+        }
+        .legend-categorical .legend-entry {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 11px;
+            color: #555;
+        }
+        .legend-categorical .legend-swatch {
+            width: 14px;
+            height: 14px;
+            border-radius: 3px;
+            border: 1px solid #ccc;
+        }
+
+        /* Pixel info popup */
+        .pixel-info {
+            position: fixed;
+            bottom: 20px; right: 10px;
+            z-index: 1000;
+            background: #ffffff;
+            border-radius: 6px;
+            box-shadow: 0 2px 12px rgba(0,0,0,0.2);
+            padding: 10px 14px;
+            font-size: 12px;
+            color: #333;
+            display: none;
+            min-width: 200px;
+        }
+        .pixel-info .coord {
+            color: #888;
+            font-size: 11px;
+        }
+    </style>
+</head>
+<body>
+
+<div class="header">
+    <h1>PeatGuard</h1>
+    <span class="subtitle">Peatland Subsidence Monitoring -- Teluk Bayur, West Kalimantan</span>
+</div>
+
+<div id="map"></div>
+
+<div class="layer-panel" id="layerPanel">
+    <div class="layer-panel-header">Product Layers</div>
+    <!-- Populated by JavaScript -->
+</div>
+
+<div class="legend-panel" id="legendPanel">
+    <!-- Populated by JavaScript -->
+</div>
+
+<div class="pixel-info" id="pixelInfo">
+    Click on the map to query pixel values.
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+(function() {
+    "use strict";
+
+    // -- Configuration injected from server --
+    var GCS_BASE_URL = "{{ gcs_base_url }}";
+    var CENTER = [{{ center_lat }}, {{ center_lon }}];
+    var PRODUCTS = {{ products | tojson }};
+
+    // -- Map initialization --
+    var map = L.map("map", {
+        center: CENTER,
+        zoom: 12,
+        zoomControl: true
+    });
+
+    // Add padding for header
+    map.getContainer().style.marginTop = "40px";
+    map.getContainer().style.height = "calc(100vh - 40px)";
+    map.invalidateSize();
+
+    // Basemap
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+        attribution: "OpenStreetMap contributors",
+        maxZoom: 18
+    }).addTo(map);
+
+    // -- Tile layers for each product --
+    var tileLayers = {};
+    var activeLayer = null;
+
+    function buildTileUrl(filename, meta) {
+        var cogUrl = GCS_BASE_URL + "/" + filename;
+        var base = window.location.origin + "/cog/tiles/WebMercatorQuad/{z}/{x}/{y}.png";
+        base += "?url=" + encodeURIComponent(cogUrl);
+        base += "&colormap_name=" + encodeURIComponent(meta.colormap);
+        base += "&rescale=" + encodeURIComponent(meta.rescale);
+        base += "&nodata=-9999";
+        return base;
+    }
+
+    // Build tile layers
+    Object.keys(PRODUCTS).forEach(function(filename) {
+        var meta = PRODUCTS[filename];
+        var url = buildTileUrl(filename, meta);
+        tileLayers[filename] = L.tileLayer(url, {
+            opacity: 0.75,
+            maxZoom: 18,
+            tileSize: 256,
+            attribution: "PeatGuard"
+        });
+    });
+
+    // -- Layer panel --
+    var layerPanel = document.getElementById("layerPanel");
+
+    Object.keys(PRODUCTS).forEach(function(filename) {
+        var meta = PRODUCTS[filename];
+        var item = document.createElement("div");
+        item.className = "layer-item";
+
+        var label = document.createElement("label");
+        var checkbox = document.createElement("input");
+        checkbox.type = "checkbox";
+        checkbox.dataset.filename = filename;
+        if (meta.default_on) {
+            checkbox.checked = true;
+        }
+
+        var text = document.createTextNode(" " + meta.label);
+        label.appendChild(checkbox);
+        label.appendChild(text);
+
+        var desc = document.createElement("div");
+        desc.className = "layer-desc";
+        desc.textContent = meta.description;
+
+        item.appendChild(label);
+        item.appendChild(desc);
+        layerPanel.appendChild(item);
+
+        checkbox.addEventListener("change", function() {
+            if (this.checked) {
+                tileLayers[filename].addTo(map);
+                updateLegend(filename, meta);
+            } else {
+                map.removeLayer(tileLayers[filename]);
+                if (activeLayer === filename) {
+                    activeLayer = null;
+                    document.getElementById("legendPanel").style.display = "none";
+                }
+            }
+        });
+
+        // Add default layers
+        if (meta.default_on) {
+            tileLayers[filename].addTo(map);
+            updateLegend(filename, meta);
+        }
+    });
+
+    // -- Legend --
+    function updateLegend(filename, meta) {
+        var panel = document.getElementById("legendPanel");
+        activeLayer = filename;
+        panel.style.display = "block";
+        panel.innerHTML = "";
+
+        var title = document.createElement("div");
+        title.className = "legend-title";
+        title.textContent = meta.label;
+        panel.appendChild(title);
+
+        if (meta.legend_type === "categorical" || meta.legend_type === "binary") {
+            var catDiv = document.createElement("div");
+            catDiv.className = "legend-categorical";
+            for (var i = 0; i < meta.legend_labels.length; i++) {
+                var entry = document.createElement("div");
+                entry.className = "legend-entry";
+                var swatch = document.createElement("div");
+                swatch.className = "legend-swatch";
+                swatch.style.background = meta.legend_colors[i];
+                var lbl = document.createElement("span");
+                lbl.textContent = meta.legend_labels[i];
+                entry.appendChild(swatch);
+                entry.appendChild(lbl);
+                catDiv.appendChild(entry);
+            }
+            panel.appendChild(catDiv);
+        } else {
+            // Gradient legend (diverging or sequential)
+            var gradient = document.createElement("div");
+            gradient.className = "legend-gradient";
+            gradient.style.background = "linear-gradient(to right, " +
+                meta.legend_colors.join(", ") + ")";
+            panel.appendChild(gradient);
+
+            var labels = document.createElement("div");
+            labels.className = "legend-labels";
+            for (var j = 0; j < meta.legend_labels.length; j++) {
+                var span = document.createElement("span");
+                span.textContent = meta.legend_labels[j];
+                labels.appendChild(span);
+            }
+            panel.appendChild(labels);
+        }
+    }
+
+    // -- Pixel value query on click --
+    var pixelInfoDiv = document.getElementById("pixelInfo");
+
+    map.on("click", function(e) {
+        if (!activeLayer) return;
+
+        var lat = e.latlng.lat.toFixed(5);
+        var lon = e.latlng.lng.toFixed(5);
+        var cogUrl = GCS_BASE_URL + "/" + activeLayer;
+        var pointUrl = "/cog/point/" + lon + "," + lat + "?url=" + encodeURIComponent(cogUrl);
+
+        pixelInfoDiv.style.display = "block";
+        pixelInfoDiv.innerHTML = '<div class="coord">Querying ' + lat + ", " + lon + "...</div>';
+
+        fetch(pointUrl)
+            .then(function(resp) { return resp.json(); })
+            .then(function(data) {
+                var values = data.values || [];
+                var meta = PRODUCTS[activeLayer];
+                var html = '<div class="coord">' + lat + ", " + lon + "</div>";
+                html += "<strong>" + meta.label + "</strong><br>";
+                if (values.length > 0) {
+                    var val = values[0];
+                    if (val === -9999 || val === null) {
+                        html += "No data";
+                    } else {
+                        html += "Value: " + (typeof val === "number" ? val.toFixed(3) : val);
+                    }
+                } else {
+                    html += "No data at this location";
+                }
+                pixelInfoDiv.innerHTML = html;
+            })
+            .catch(function() {
+                pixelInfoDiv.innerHTML = '<div class="coord">' + lat + ", " + lon + "</div>" +
+                    "Failed to query pixel value.";
+            });
+    });
+})();
+</script>
+
+</body>
+</html>

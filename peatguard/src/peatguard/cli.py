@@ -50,7 +50,7 @@ def _discover_slc_paths(config) -> list[Path]:
     # Priority 1: GCS FUSE mount (zero-copy, no RAM usage)
     fuse_slc_dir = GCS_FUSE_MOUNT / "raw" / "slc"
     if fuse_slc_dir.exists():
-        fuse_paths = sorted(fuse_slc_dir.glob("S1*.zip"))
+        fuse_paths = sorted(fuse_slc_dir.glob("*.zip"))
         if fuse_paths:
             logger.info("Found %d SLC files via GCS FUSE mount: %s", len(fuse_paths), fuse_slc_dir)
             return fuse_paths
@@ -80,13 +80,13 @@ def _discover_slc_paths(config) -> list[Path]:
             return sorted(paths)
 
     # Priority 3: Local directory scan
-    local_paths = sorted(local_slc_dir.glob("S1*.zip"))
+    local_paths = sorted(local_slc_dir.glob("*.zip"))
     if local_paths:
         logger.info("Found %d SLC files in local storage: %s", len(local_paths), local_slc_dir)
         return local_paths
 
     alt_dir = config.storage.output_dir / "raw" / "slc"
-    alt_paths = sorted(alt_dir.glob("S1*.zip")) if alt_dir.exists() else []
+    alt_paths = sorted(alt_dir.glob("*.zip")) if alt_dir.exists() else []
     if alt_paths:
         logger.info("Found %d SLC files in output dir: %s", len(alt_paths), alt_dir)
         return alt_paths
@@ -100,7 +100,7 @@ def _discover_grd_paths(config) -> list[Path]:
     # Priority 1: GCS FUSE mount
     fuse_grd_dir = GCS_FUSE_MOUNT / "raw" / "grd"
     if fuse_grd_dir.exists():
-        fuse_paths = sorted(fuse_grd_dir.glob("S1*.zip"))
+        fuse_paths = sorted(fuse_grd_dir.glob("*.zip"))
         if fuse_paths:
             logger.info("Found %d GRD files via GCS FUSE mount: %s", len(fuse_paths), fuse_grd_dir)
             return fuse_paths
@@ -127,7 +127,7 @@ def _discover_grd_paths(config) -> list[Path]:
                 return sorted(paths)
 
     # Priority 3: Local scan
-    local_paths = sorted(local_grd_dir.glob("S1*.zip"))
+    local_paths = sorted(local_grd_dir.glob("*.zip"))
     if local_paths:
         logger.info("Found %d GRD files in local storage: %s", len(local_paths), local_grd_dir)
         return local_paths
@@ -264,6 +264,188 @@ def analyze(ctx: click.Context) -> None:
     click.echo(f"Analysis complete: {len(products)} products generated")
 
 
+@main.command()
+@click.option(
+    "--c-vel",
+    "c_vel_path",
+    type=click.Path(exists=True, path_type=Path),
+    default=None,
+    help="Path to C-band velocity GeoTIFF. Auto-discovered from output_dir or GCS if omitted.",
+)
+@click.option(
+    "--c-coh",
+    "c_coh_path",
+    type=click.Path(exists=True, path_type=Path),
+    default=None,
+    help="Path to C-band coherence GeoTIFF.",
+)
+@click.option(
+    "--l-vel",
+    "l_vel_path",
+    type=click.Path(exists=True, path_type=Path),
+    default=None,
+    help="Path to L-band (NISAR) velocity GeoTIFF.",
+)
+@click.option(
+    "--l-coh",
+    "l_coh_path",
+    type=click.Path(exists=True, path_type=Path),
+    default=None,
+    help="Path to L-band (NISAR) coherence GeoTIFF.",
+)
+@click.pass_context
+def fuse(
+    ctx: click.Context,
+    c_vel_path: Optional[Path],
+    c_coh_path: Optional[Path],
+    l_vel_path: Optional[Path],
+    l_coh_path: Optional[Path],
+) -> None:
+    """Fuse C-band and L-band InSAR velocity maps into a unified subsidence product.
+
+    Combines Sentinel-1 (C-band) and NISAR (L-band) velocity and coherence
+    products using coherence-weighted averaging. C-band works well over cleared
+    land while L-band penetrates forest canopy, so the fused product has better
+    spatial coverage than either sensor alone.
+
+    If paths are not provided explicitly, the command looks for products in
+    the configured output directory and GCS bucket.
+    """
+    from peatguard.analysis.fusion import generate_fusion_products
+    from peatguard.config import load_config
+
+    config = load_config(ctx.obj["config_path"], ctx.obj["override_path"])
+    output_dir = config.storage.output_dir
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Auto-discover paths from output_dir if not provided
+    if c_vel_path is None:
+        c_vel_path = output_dir / "subsidence_velocity.tif"
+    if c_coh_path is None:
+        c_coh_path = output_dir / "coherence_median.tif"
+    if l_vel_path is None:
+        l_vel_path = output_dir / "nisar_subsidence_velocity.tif"
+    if l_coh_path is None:
+        l_coh_path = output_dir / "nisar_coherence_median.tif"
+
+    # Try downloading from GCS if files are missing
+    missing_paths = {
+        c_vel_path: "products/subsidence_velocity.tif",
+        c_coh_path: "products/coherence_median.tif",
+        l_vel_path: "products/nisar_subsidence_velocity.tif",
+        l_coh_path: "products/nisar_coherence_median.tif",
+    }
+    if config.storage.gcs_bucket:
+        from peatguard.export.gcs import download_file
+
+        for local_path, blob_name in missing_paths.items():
+            if not local_path.exists():
+                try:
+                    local_path.parent.mkdir(parents=True, exist_ok=True)
+                    download_file(config.storage.gcs_bucket, blob_name, local_path)
+                    click.echo(f"Downloaded {blob_name} from GCS")
+                except Exception:
+                    pass
+
+    # Validate all inputs exist
+    for label, path in [
+        ("C-band velocity", c_vel_path),
+        ("C-band coherence", c_coh_path),
+        ("L-band velocity", l_vel_path),
+        ("L-band coherence", l_coh_path),
+    ]:
+        if not path.exists():
+            click.echo(
+                f"{label} not found: {path}\n"
+                "Run the pipeline for both sentinel1 and nisar sensors first, "
+                "or provide explicit paths with --c-vel, --c-coh, --l-vel, --l-coh.",
+                err=True,
+            )
+            sys.exit(1)
+
+    fusion_cfg = config.fusion
+    products = generate_fusion_products(
+        c_vel_path=c_vel_path,
+        c_coh_path=c_coh_path,
+        l_vel_path=l_vel_path,
+        l_coh_path=l_coh_path,
+        output_dir=output_dir,
+        nodata=config.export.nodata,
+        min_coherence=fusion_cfg.min_coherence,
+        c_band_weight_boost=fusion_cfg.c_band_weight_boost,
+    )
+
+    # Re-run subsidence classification on fused velocity
+    fused_vel = products.get("fused_velocity")
+    if fused_vel:
+        from peatguard.analysis.subsidence_class import classify_subsidence_file
+
+        fused_class_path = output_dir / "fused_subsidence_class.tif"
+        water_mask_path = output_dir / "water_mask.tif"
+        classify_subsidence_file(
+            fused_vel,
+            fused_class_path,
+            config.classification,
+            water_mask_path=water_mask_path if water_mask_path.exists() else None,
+        )
+        products["fused_subsidence_class"] = fused_class_path
+
+        # Re-run risk scoring if canal distance exists
+        canal_dist = output_dir / "canal_distance.tif"
+        if canal_dist.exists():
+            from peatguard.analysis.risk_score import generate_risk_map
+
+            fused_risk_path = output_dir / "fused_canal_risk.tif"
+            risk_cfg = config.risk_score
+            generate_risk_map(
+                fused_vel,
+                canal_dist,
+                fused_risk_path,
+                proximity_weight=risk_cfg.proximity_weight,
+                subsidence_weight=risk_cfg.subsidence_weight,
+                max_influence_m=risk_cfg.max_influence_m,
+                severe_velocity_mm_yr=risk_cfg.severe_velocity_mm_yr,
+                water_mask_path=water_mask_path if water_mask_path.exists() else None,
+            )
+            products["fused_canal_risk"] = fused_risk_path
+
+    # Upload to GCS
+    if config.storage.gcs_bucket:
+        from peatguard.export.gcs import upload_file
+
+        for name, path in products.items():
+            blob_name = f"products/{path.name}"
+            try:
+                upload_file(path, config.storage.gcs_bucket, blob_name)
+                click.echo(f"Uploaded {name} to gs://{config.storage.gcs_bucket}/{blob_name}")
+            except Exception as exc:
+                click.echo(f"Failed to upload {name}: {exc}", err=True)
+
+    click.echo(f"Fusion complete: {len(products)} products generated")
+    for name, path in products.items():
+        click.echo(f"  {name}: {path}")
+
+
+@main.command()
+@click.option("--host", default="0.0.0.0", help="Bind address.")
+@click.option("--port", default=8080, type=int, help="Port number.")
+@click.pass_context
+def dashboard(ctx: click.Context, host: str, port: int) -> None:
+    """Launch the web dashboard for visualizing COG products."""
+    try:
+        import uvicorn
+    except ImportError:
+        click.echo(
+            "Dashboard dependencies not installed. "
+            "Run: pip install peatguard[dashboard]",
+            err=True,
+        )
+        sys.exit(1)
+
+    logger.info("Starting PeatGuard dashboard on %s:%d", host, port)
+    uvicorn.run("peatguard.dashboard.app:app", host=host, port=port, log_level="info")
+
+
 @main.command(name="run")
 @click.option("--start", required=True, help="Start date (YYYY-MM-DD).")
 @click.option("--end", required=True, help="End date (YYYY-MM-DD).")
@@ -281,6 +463,76 @@ def run_all(ctx: click.Context, start: str, end: str, workers: int) -> None:
         max_workers=workers,
     )
     click.echo("Full pipeline complete")
+
+
+@main.command()
+@click.option("--status", is_flag=True, help="Show current scheduling status (requires gcloud).")
+def schedule(status: bool) -> None:
+    """Show automated scheduling setup and status.
+
+    The PeatGuard pipeline can be scheduled to run monthly using Google Cloud
+    Scheduler triggering a Cloud Workflow. The workflow orchestrates all 5
+    pipeline stages sequentially (with InSAR and backscatter in parallel).
+
+    Setup:
+        cd peatguard/peatguard
+        bash cloud/scheduler-setup.sh
+
+    Management:
+        bash cloud/scheduler-setup.sh --status
+        bash cloud/scheduler-setup.sh --pause
+        bash cloud/scheduler-setup.sh --resume
+        bash cloud/scheduler-setup.sh --run-now
+        bash cloud/scheduler-setup.sh --delete
+    """
+    import subprocess
+
+    click.echo("PeatGuard Automated Scheduling")
+    click.echo("=" * 40)
+    click.echo("")
+    click.echo("Schedule:    1st of each month at 06:00 WIB (Asia/Jakarta)")
+    click.echo("Workflow:    peatguard-monthly")
+    click.echo("Scheduler:   peatguard-monthly-trigger")
+    click.echo("Region:      asia-southeast1")
+    click.echo("Project:     peatguard")
+    click.echo("")
+    click.echo("Pipeline execution order:")
+    click.echo("  1. ingest      -- download new Sentinel-1 SLC + GRD")
+    click.echo("  2. insar       -- ISCE2 topsApp per pair (parallel with backscatter)")
+    click.echo("  3. backscatter -- GRD calibration + composite (parallel with insar)")
+    click.echo("  4. timeseries  -- MintPy SBAS inversion")
+    click.echo("  5. analyze     -- classification + canal detection + risk scoring")
+    click.echo("")
+    click.echo("Setup:   bash cloud/scheduler-setup.sh")
+    click.echo("Pause:   bash cloud/scheduler-setup.sh --pause")
+    click.echo("Resume:  bash cloud/scheduler-setup.sh --resume")
+    click.echo("Run now: bash cloud/scheduler-setup.sh --run-now")
+
+    if status:
+        click.echo("")
+        click.echo("Querying GCP for current status...")
+        click.echo("-" * 40)
+        try:
+            result = subprocess.run(
+                [
+                    "gcloud", "scheduler", "jobs", "describe",
+                    "peatguard-monthly-trigger",
+                    "--location=asia-southeast1",
+                    "--project=peatguard",
+                    "--format=yaml(name,state,schedule,timeZone,lastAttemptTime,nextRunTime)",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            if result.returncode == 0:
+                click.echo(result.stdout)
+            else:
+                click.echo("Scheduler job not found. Run 'bash cloud/scheduler-setup.sh' to deploy.")
+        except FileNotFoundError:
+            click.echo("gcloud CLI not found. Install the Google Cloud SDK to check status.")
+        except subprocess.TimeoutExpired:
+            click.echo("Timed out querying GCP. Check your network connection.")
 
 
 if __name__ == "__main__":

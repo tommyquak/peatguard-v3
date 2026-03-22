@@ -1,0 +1,19 @@
+# PeatGuard NISAR Override Configuration
+#
+# Use as an override config on top of default.yaml to switch from
+# Sentinel-1 C-band to NISAR L-band processing:
+#
+#   peatguard run --config config/default.yaml --override config/nisar.yaml
+#
+# NISAR L-band (24cm wavelength) penetrates tropical forest canopy,
+# enabling peatland subsidence measurement under intact peat forest
+# where C-band Sentinel-1 loses coherence.
+
+sensor: nisar
+
+processing:
+  # L-band specific processing parameters
+  wavelength_m: 0.2384          # L-band wavelength (meters)
+  incidence_deg: 33.9           # typical NISAR mid-swath incidence
+  do_ion: false                 # ionospheric correction not needed for L-band split-spectrum
+                                # (ISCE2 handles it differently for stripmap)

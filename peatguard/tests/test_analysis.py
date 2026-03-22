@@ -19,7 +19,16 @@ from peatguard.analysis.subsidence_class import (
     CLASS_NOISE_UPLIFT,
     CLASS_SEVERE,
     CLASS_STABLE,
+    CLASS_WATER,
     classify_subsidence,
+)
+from peatguard.analysis.water_mask import (
+    compute_water_mask_linear,
+    compute_water_mask_vv,
+    exclude_canals_from_water,
+    morphological_cleanup_water,
+    compute_ndvi,
+    compute_mndwi,
 )
 
 
@@ -88,6 +97,92 @@ class TestRiskScore:
         combined = compute_combined_risk(prox, subs, 0.4, 0.6)
         assert combined[0, 0] == pytest.approx(0.4)  # Only proximity
         assert combined[0, 1] == pytest.approx(0.6)  # Only subsidence
+
+
+class TestWaterMask:
+    def test_water_mask_vv_db(self):
+        """Water pixels (< -20 dB) should be detected."""
+        vv_db = np.array([[-25.0, -15.0, -30.0, -10.0, -9999.0]], dtype=np.float32)
+        mask = compute_water_mask_vv(vv_db, threshold_db=-20.0, nodata=-9999.0)
+        assert mask[0, 0] is np.True_   # -25 < -20 -> water
+        assert mask[0, 1] is np.False_  # -15 > -20 -> not water
+        assert mask[0, 2] is np.True_   # -30 < -20 -> water
+        assert mask[0, 3] is np.False_  # -10 > -20 -> not water
+        assert mask[0, 4] is np.False_  # nodata -> not water
+
+    def test_water_mask_linear(self):
+        """Linear scale: -20 dB = 0.01 linear power."""
+        threshold_linear = 10.0 ** (-20.0 / 10.0)  # 0.01
+        vv = np.array([[0.005, 0.05, 0.001, 0.1]], dtype=np.float32)
+        mask = compute_water_mask_linear(vv, threshold_db=-20.0)
+        assert mask[0, 0] is np.True_   # 0.005 < 0.01
+        assert mask[0, 1] is np.False_  # 0.05 > 0.01
+        assert mask[0, 2] is np.True_   # 0.001 < 0.01
+        assert mask[0, 3] is np.False_  # 0.1 > 0.01
+
+    def test_water_mask_linear_from_fixture(self, sample_vv_backscatter):
+        """Canal regions in fixture have very low backscatter, should be detected as water."""
+        mask = compute_water_mask_linear(sample_vv_backscatter, threshold_db=-20.0)
+        assert mask.dtype == bool
+        # The fixture has canal features at rows 45-55 and cols 20-25 with 0.05*0.05
+        # scaling = very low values. These should be detected as water.
+        canal_h_region = mask[45:55, :]
+        assert canal_h_region.sum() > 0
+
+    def test_exclude_canals(self):
+        """Canal pixels should be removed from water mask."""
+        water = np.zeros((10, 10), dtype=bool)
+        water[3:7, :] = True  # Large water body
+        canal = np.zeros((10, 10), dtype=bool)
+        canal[5, :] = True  # Canal through the middle
+        result = exclude_canals_from_water(water, canal)
+        assert result[5, 0] is np.False_  # Canal pixel removed
+        assert result[3, 0] is np.True_   # Non-canal water preserved
+
+    def test_morphological_cleanup(self):
+        """Small isolated detections should be removed."""
+        mask = np.zeros((100, 100), dtype=bool)
+        # Large water body (should survive cleanup)
+        mask[20:40, 20:40] = True  # 400 pixels
+        # Tiny noise (should be removed)
+        mask[80, 80] = True  # 1 pixel
+        cleaned = morphological_cleanup_water(mask, min_size_pixels=10, closing_radius=0)
+        assert cleaned[30, 30] is np.True_    # Large body preserved
+        assert cleaned[80, 80] is np.False_   # Noise removed
+
+    def test_classify_with_water_mask(self):
+        """Water mask should override subsidence classification."""
+        velocity = np.array([[-60, -30, -10, 5]], dtype=np.float32)
+        water = np.array([[True, False, False, True]], dtype=bool)
+        classified = classify_subsidence(velocity, water_mask=water)
+        assert classified[0, 0] == CLASS_WATER       # Was severe, now water
+        assert classified[0, 1] == CLASS_ACTIVE_DRYING  # Not water, unchanged
+        assert classified[0, 2] == CLASS_STABLE         # Not water, unchanged
+        assert classified[0, 3] == CLASS_WATER       # Was noise/uplift, now water
+
+
+class TestNDVI:
+    def test_ndvi_values(self):
+        """NDVI should range from -1 to 1 with expected values."""
+        nir = np.array([[0.8, 0.1, 0.5, 0.0]], dtype=np.float32)
+        red = np.array([[0.1, 0.8, 0.5, 0.0]], dtype=np.float32)
+        ndvi = compute_ndvi(nir, red)
+        # Dense vegetation: (0.8-0.1)/(0.8+0.1) = 0.778
+        assert ndvi[0, 0] == pytest.approx(0.778, abs=0.01)
+        # Water: (0.1-0.8)/(0.1+0.8) = -0.778
+        assert ndvi[0, 1] == pytest.approx(-0.778, abs=0.01)
+        # Bare soil: (0.5-0.5)/(0.5+0.5) = 0.0
+        assert ndvi[0, 2] == pytest.approx(0.0, abs=0.01)
+
+
+class TestMNDWI:
+    def test_mndwi_water_positive(self):
+        """MNDWI should be positive for water (green > SWIR)."""
+        green = np.array([[0.3, 0.1]], dtype=np.float32)
+        swir = np.array([[0.1, 0.3]], dtype=np.float32)
+        mndwi = compute_mndwi(green, swir)
+        assert mndwi[0, 0] > 0  # Water: green > SWIR
+        assert mndwi[0, 1] < 0  # Vegetation: green < SWIR
 
 
 class TestDeramp:

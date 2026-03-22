@@ -240,5 +240,49 @@ def export_velocity(
         )
         outputs["velocity_uncertainty"] = std_path
 
+    # Reproject to standard output CRS (UTM) if different from native CRS.
+    # Velocity is natively in EPSG:4326 from MintPy geometry; backscatter
+    # products are in UTM. Standardizing avoids fragile on-the-fly reprojection
+    # in the analysis stage.
+    output_crs = config.aoi.epsg if config else None
+    if output_crs is not None and output_crs != crs:
+        import rasterio
+        from rasterio.crs import CRS as RioCRS
+        from rasterio.warp import calculate_default_transform, reproject
+        from rasterio.enums import Resampling
+
+        dst_crs = RioCRS.from_epsg(output_crs)
+        logger.info("Reprojecting velocity products from EPSG:%s to EPSG:%s", crs, output_crs)
+
+        utm_outputs = {}
+        for product_name, src_path in outputs.items():
+            utm_path = src_path.parent / src_path.name.replace(".tif", "_utm.tif")
+            with rasterio.open(src_path) as src:
+                dst_transform, dst_width, dst_height = calculate_default_transform(
+                    src.crs, dst_crs, src.width, src.height, *src.bounds,
+                )
+                dst_profile = src.profile.copy()
+                dst_profile.update(
+                    crs=dst_crs,
+                    transform=dst_transform,
+                    width=dst_width,
+                    height=dst_height,
+                )
+                resamp = Resampling.nearest if src.dtypes[0] == "uint8" else Resampling.bilinear
+                with rasterio.open(utm_path, "w", **dst_profile) as dst:
+                    for band_idx in range(1, src.count + 1):
+                        reproject(
+                            source=rasterio.band(src, band_idx),
+                            destination=rasterio.band(dst, band_idx),
+                            src_transform=src.transform,
+                            src_crs=src.crs,
+                            dst_transform=dst_transform,
+                            dst_crs=dst_crs,
+                            resampling=resamp,
+                        )
+            utm_outputs[product_name + "_utm"] = utm_path
+            logger.info("Reprojected %s -> %s", product_name, utm_path.name)
+        outputs.update(utm_outputs)
+
     logger.info("Exported %d velocity products to %s", len(outputs), output_dir)
     return outputs

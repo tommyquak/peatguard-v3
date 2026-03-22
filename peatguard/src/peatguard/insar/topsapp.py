@@ -178,6 +178,7 @@ _TOPSAPP_XML_TEMPLATE = textwrap.dedent("""\
             <property name="azimuth looks">{az_looks}</property>
             <property name="range looks">{rg_looks}</property>
             <property name="filter strength">{filter_strength}</property>
+            <property name="do ion">{do_ion_str}</property>
             <property name="geocode list">['merged/filt_topophase.unw',
                 'merged/filt_topophase.unw.conncomp',
                 'merged/phsig.cor',
@@ -269,6 +270,7 @@ def generate_topsapp_config(
         az_looks=az_looks,
         rg_looks=rg_looks,
         filter_strength=config.processing.goldstein_alpha,
+        do_ion_str=str(config.processing.do_ion),
         swath_list=swath_list,
     )
 

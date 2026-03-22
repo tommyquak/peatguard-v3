@@ -61,6 +61,34 @@ spec:
           serviceAccountName: peatguard-sa@PROJECT_ID.iam.gserviceaccount.com
 
 ---
+# -- Backscatter Job: GRD calibration, speckle filter, terrain correction, composite --
+apiVersion: run.googleapis.com/v1
+kind: Job
+metadata:
+  name: peatguard-backscatter
+  labels:
+    app: peatguard
+    stage: backscatter
+spec:
+  template:
+    spec:
+      template:
+        spec:
+          containers:
+            - image: asia-southeast1-docker.pkg.dev/PROJECT_ID/peatguard/pipeline:latest
+              command: ["peatguard"]
+              args: ["process", "--mode", "backscatter"]
+              resources:
+                limits:
+                  cpu: "8"
+                  memory: 32Gi
+              env:
+                - name: PEATGUARD_STORAGE__GCS_BUCKET
+                  value: peatguard-data
+          timeoutSeconds: 7200
+          serviceAccountName: peatguard-sa@PROJECT_ID.iam.gserviceaccount.com
+
+---
 # -- Time-Series Job: MintPy SBAS inversion --
 apiVersion: run.googleapis.com/v1
 kind: Job
@@ -85,6 +113,17 @@ spec:
               env:
                 - name: PEATGUARD_STORAGE_GCS_BUCKET
                   value: peatguard-data
+                # CDS API credentials for ERA5 tropospheric correction.
+                # In production, use Secret Manager references instead of
+                # plain-text values:
+                #   valueFrom:
+                #     secretKeyRef:
+                #       name: cds-api-key
+                #       key: latest
+                - name: CDS_API_URL
+                  value: https://cds.climate.copernicus.eu/api
+                - name: CDS_API_KEY
+                  value: REPLACE_WITH_SECRET_MANAGER_REF
           timeoutSeconds: 3600
           serviceAccountName: peatguard-sa@PROJECT_ID.iam.gserviceaccount.com
 

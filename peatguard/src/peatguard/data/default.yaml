@@ -1,11 +1,14 @@
 # PeatGuard Pipeline Configuration
 # Default settings for peatland monitoring
 
+# Sensor selection: "sentinel1" (C-band TOPS) or "nisar" (L-band stripmap)
+sensor: sentinel1
+
 aoi:
   # Teluk Bayur Village, West Kalimantan, Indonesia (from pitch deck)
   # Center: -2.561, 114.354 -- 17x11km scan area
   bbox: [114.277, -2.611, 114.431, -2.511]  # [west, south, east, north]
-  epsg: 32750  # UTM Zone 50S (114-120 deg E, southern hemisphere)
+  epsg: 32649  # UTM Zone 49S (108-114 deg E, southern hemisphere)
 
 sentinel1:
   platform: SENTINEL-1
@@ -17,6 +20,19 @@ sentinel1:
   min_temporal_gap_days: 14
   max_temporal_baseline_days: 48
 
+nisar:
+  platform: NISAR
+  polarization: HH
+  beam_mode: ALOS
+  processing_level: SLC
+  min_temporal_gap_days: 12     # NISAR 12-day repeat cycle
+  max_temporal_baseline_days: 48
+  wavelength_m: 0.2384          # L-band, 24cm
+  orbit_height_m: 747000.0
+  range_pixel_size_m: 7.5
+  azimuth_pixel_size_m: 6.0
+  incidence_deg: 33.9
+
 processing:
   resolution_m: 10.0
   coherence_threshold: 0.3
@@ -27,12 +43,40 @@ processing:
   speckle_window_size: 7
   goldstein_alpha: 0.8
   snaphu_cost_mode: DEFO
+  do_ion: true  # Ionospheric correction (split-spectrum); critical for equatorial regions
 
 classification:
   # Subsidence velocity thresholds (mm/yr)
   severe_threshold: -50.0
   active_drying_threshold: -20.0
   stable_threshold: 0.0
+
+water_mask:
+  # Water body detection from VV backscatter to prevent false subsidence
+  # detections over open water. Water produces specular reflection
+  # (very low backscatter) that mimics low InSAR coherence.
+  enabled: true
+  vv_threshold_db: -20.0       # dB threshold; pixels below this are water
+  min_water_size_pixels: 50    # min connected component size (50 px @ 10m = 5000 sq m)
+  closing_radius: 3            # morphological closing radius (fills small gaps)
+  exclude_canals: true         # remove canal pixels from water mask
+
+risk_score:
+  # Calibrated to Hooijer et al. (2012) water table-subsidence relationship
+  # and Dupuit equation approximation for canal drainage influence
+  proximity_weight: 0.45       # canal proximity (indirect proxy)
+  subsidence_weight: 0.55      # InSAR velocity (direct measurement)
+  max_influence_m: 1200.0      # canal influence radius (Hooijer: 1-1.5 km)
+  severe_velocity_mm_yr: -40.0 # velocity at max risk (Hooijer: 20-50 mm/yr)
+
+fusion:
+  # Multi-sensor fusion: combine C-band (Sentinel-1) and L-band (NISAR)
+  # velocity maps using coherence-weighted averaging. Only runs when both
+  # sensor products are available (e.g., after running separate sentinel1
+  # and nisar pipeline passes).
+  enabled: false                   # set true when both sensor products exist
+  c_band_weight_boost: 1.0        # multiplicative boost for C-band weight (1.0 = no boost)
+  min_coherence: 0.3              # minimum coherence for a sensor to contribute
 
 export:
   cog_blocksize: 512
@@ -50,8 +94,9 @@ storage:
   gcs_prefix: peatguard-data
 
 mintpy:
-  reference_lalo: [-2.496900, 114.312148]  # Stable reference point
-  tropospheric_correction: ERA5
+  reference_lalo: [-2.496900, 114.312148]  # Stable reference point on non-peat substrate
+  reference_min_coherence: 0.7
+  tropospheric_correction: pyaps  # ERA5 via PyAPS (requires CDS API key)
   unwrap_error_correction: bridging+phase_closure
   network_modification:
     coherence_based: true

@@ -28,6 +28,7 @@ CLASS_SEVERE = 1
 CLASS_ACTIVE_DRYING = 2
 CLASS_STABLE = 3
 CLASS_NOISE_UPLIFT = 4
+CLASS_WATER = 5
 CLASS_NODATA = 0
 
 CLASS_LABELS = {
@@ -36,6 +37,7 @@ CLASS_LABELS = {
     CLASS_ACTIVE_DRYING: "Active drying (-50 to -20 mm/yr)",
     CLASS_STABLE: "Stable (-20 to 0 mm/yr)",
     CLASS_NOISE_UPLIFT: "Noise/Uplift (> 0 mm/yr)",
+    CLASS_WATER: "Water body",
 }
 
 
@@ -43,6 +45,7 @@ def classify_subsidence(
     velocity_mm_yr: np.ndarray,
     nodata: float = -9999.0,
     thresholds: Optional[ClassificationConfig] = None,
+    water_mask: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     """Classify subsidence velocity into severity categories.
 
@@ -50,9 +53,13 @@ def classify_subsidence(
         velocity_mm_yr: 2D array of velocity in mm/yr.
         nodata: NoData value in the input.
         thresholds: Classification thresholds. Uses defaults if None.
+        water_mask: Optional boolean 2D array where True = water pixel.
+            Water pixels are assigned CLASS_WATER (5) regardless of
+            velocity, preventing false subsidence detections over
+            open water bodies.
 
     Returns:
-        2D uint8 array of class codes (0=nodata, 1-4=classes).
+        2D uint8 array of class codes (0=nodata, 1-5=classes).
     """
     if thresholds is None:
         thresholds = ClassificationConfig()
@@ -73,6 +80,24 @@ def classify_subsidence(
     ] = CLASS_STABLE
     classified[valid & (velocity_mm_yr >= thresholds.stable_threshold)] = CLASS_NOISE_UPLIFT
 
+    # Apply water mask: override any classification on water pixels
+    if water_mask is not None:
+        if water_mask.shape != velocity_mm_yr.shape:
+            logger.warning(
+                "Water mask shape %s does not match velocity shape %s, skipping",
+                water_mask.shape,
+                velocity_mm_yr.shape,
+            )
+        else:
+            n_reclassified = ((classified != CLASS_NODATA) & water_mask).sum()
+            classified[water_mask] = CLASS_WATER
+            logger.info(
+                "Water mask applied: %d pixels reclassified to water "
+                "(%d were previously non-nodata)",
+                water_mask.sum(),
+                n_reclassified,
+            )
+
     # Log class distribution
     for code, label in CLASS_LABELS.items():
         count = (classified == code).sum()
@@ -86,6 +111,7 @@ def classify_subsidence_file(
     velocity_path: Path,
     output_path: Path,
     thresholds: Optional[ClassificationConfig] = None,
+    water_mask_path: Optional[Path] = None,
 ) -> Path:
     """Classify a subsidence velocity GeoTIFF and write the result.
 
@@ -93,6 +119,9 @@ def classify_subsidence_file(
         velocity_path: Path to velocity GeoTIFF (mm/yr).
         output_path: Path for classified output.
         thresholds: Classification thresholds.
+        water_mask_path: Optional path to water mask GeoTIFF (uint8,
+            1=water). If provided, water pixels are classified as
+            CLASS_WATER instead of a subsidence class.
 
     Returns:
         Path to the classified GeoTIFF.
@@ -102,8 +131,41 @@ def classify_subsidence_file(
     data, metadata = read_raster(velocity_path)
     velocity = data[0]
 
+    # Load water mask if provided
+    water_mask = None
+    if water_mask_path is not None and water_mask_path.exists():
+        logger.info("Loading water mask: %s", water_mask_path.name)
+        wm_data, wm_meta = read_raster(water_mask_path)
+        wm_arr = wm_data[0].astype(bool)
+
+        # Handle CRS/shape mismatch by reprojecting water mask to velocity grid
+        if wm_arr.shape != velocity.shape:
+            logger.info(
+                "Reprojecting water mask from %s to velocity grid %s",
+                wm_arr.shape,
+                velocity.shape,
+            )
+            import rasterio
+            from rasterio.warp import Resampling, reproject
+
+            wm_reprojected = np.zeros(velocity.shape, dtype=np.uint8)
+            reproject(
+                source=wm_arr.astype(np.uint8),
+                destination=wm_reprojected,
+                src_transform=wm_meta["transform"],
+                src_crs=wm_meta["crs"],
+                dst_transform=metadata["transform"],
+                dst_crs=metadata["crs"],
+                resampling=Resampling.nearest,
+            )
+            water_mask = wm_reprojected.astype(bool)
+        else:
+            water_mask = wm_arr
+
     nodata = metadata["nodata"] if metadata["nodata"] is not None else -9999.0
-    classified = classify_subsidence(velocity, nodata=nodata, thresholds=thresholds)
+    classified = classify_subsidence(
+        velocity, nodata=nodata, thresholds=thresholds, water_mask=water_mask
+    )
 
     return write_cog(
         data=classified,

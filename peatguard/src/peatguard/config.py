@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 
 import yaml
 from pydantic import BaseModel, Field, field_validator
@@ -49,6 +49,29 @@ class Sentinel1Config(BaseModel):
     max_temporal_baseline_days: int = 48
 
 
+class NISARConfig(BaseModel):
+    """NISAR L-band acquisition parameters.
+
+    NISAR uses L-band (24cm wavelength) which penetrates tropical forest
+    canopy, enabling subsidence measurement under intact peat forest where
+    C-band Sentinel-1 loses coherence.
+
+    Data is freely available from ASF DAAC since February 2026.
+    """
+
+    platform: str = "NISAR"
+    polarization: str = "HH"
+    beam_mode: str = "ALOS"  # NISAR L-SAR uses ALOS-compatible beam mode designation
+    processing_level: str = "SLC"
+    min_temporal_gap_days: int = 12  # NISAR repeat cycle is 12 days
+    max_temporal_baseline_days: int = 48
+    wavelength_m: float = 0.2384  # L-band, 24cm
+    orbit_height_m: float = 747000.0  # ~747 km orbit altitude
+    range_pixel_size_m: float = 7.5  # approximate, varies by mode
+    azimuth_pixel_size_m: float = 6.0  # approximate, varies by mode
+    incidence_deg: float = 33.9  # typical mid-swath incidence angle
+
+
 class ProcessingConfig(BaseModel):
     """InSAR and backscatter processing parameters."""
 
@@ -61,6 +84,7 @@ class ProcessingConfig(BaseModel):
     speckle_window_size: int = 7
     goldstein_alpha: float = 0.8
     snaphu_cost_mode: str = "DEFO"
+    do_ion: bool = True  # Ionospheric correction via split-spectrum (recommended for equatorial)
 
 
 class ClassificationConfig(BaseModel):
@@ -69,6 +93,109 @@ class ClassificationConfig(BaseModel):
     severe_threshold: float = -50.0
     active_drying_threshold: float = -20.0
     stable_threshold: float = 0.0
+
+
+class WaterMaskConfig(BaseModel):
+    """Water body detection parameters.
+
+    Controls VV backscatter-based water masking to prevent false
+    subsidence detections over water bodies. Water shows specular
+    reflection (very low backscatter) that can mimic low coherence.
+    """
+
+    enabled: bool = True
+    vv_threshold_db: float = Field(
+        default=-20.0,
+        description=(
+            "VV backscatter threshold in dB. Pixels below this are water. "
+            "-20 dB is conservative for tropical peatlands."
+        ),
+    )
+    min_water_size_pixels: int = Field(
+        default=50,
+        description=(
+            "Minimum connected component size (pixels) to retain as water. "
+            "At 10m resolution, 50 pixels = 5000 sq m (small pond)."
+        ),
+    )
+    closing_radius: int = Field(
+        default=3,
+        description="Morphological closing radius to fill gaps in water bodies.",
+    )
+    exclude_canals: bool = Field(
+        default=True,
+        description=(
+            "Remove canal pixels from water mask to avoid interfering "
+            "with canal_detect.py results."
+        ),
+    )
+
+
+class RiskScoreConfig(BaseModel):
+    """Risk score parameters calibrated to Hooijer et al. (2012).
+
+    Proximity decay uses a linear model based on the Dupuit equation
+    approximation: water table drawdown is roughly linear with distance
+    from drainage canals in tropical peat, with effects extending 1-1.5 km.
+    """
+
+    proximity_weight: float = Field(
+        default=0.45,
+        description="Weight for canal proximity component (indirect proxy).",
+    )
+    subsidence_weight: float = Field(
+        default=0.55,
+        description="Weight for subsidence velocity component (direct measurement).",
+    )
+    max_influence_m: float = Field(
+        default=1200.0,
+        description=(
+            "Canal influence radius in meters. Hooijer et al. (2012) and "
+            "Jaenicke et al. (2010) found drainage effects extend 1-1.5 km."
+        ),
+    )
+    severe_velocity_mm_yr: float = Field(
+        default=-40.0,
+        description=(
+            "Velocity at which subsidence risk saturates (mm/yr). "
+            "Hooijer (2012): 20-50 mm/yr in first 5 years of drainage."
+        ),
+    )
+
+
+class FusionConfig(BaseModel):
+    """Multi-sensor fusion parameters for combining C-band and L-band velocity.
+
+    Fusion is only performed when both Sentinel-1 (C-band) and NISAR
+    (L-band) velocity products are available. The coherence-weighted
+    averaging strategy naturally favors the sensor with better signal
+    quality at each pixel.
+    """
+
+    enabled: bool = Field(
+        default=False,
+        description=(
+            "Enable multi-sensor fusion. Only takes effect when both "
+            "C-band and L-band velocity products exist."
+        ),
+    )
+    c_band_weight_boost: float = Field(
+        default=1.0,
+        description=(
+            "Multiplicative boost for C-band coherence weight in dual-coverage "
+            "areas. 1.0 = pure coherence weighting. Values > 1.0 increase "
+            "C-band influence, which may be desirable because C-band has "
+            "higher deformation sensitivity (shorter wavelength) over cleared land."
+        ),
+    )
+    min_coherence: float = Field(
+        default=0.3,
+        description=(
+            "Minimum temporal coherence for a sensor to contribute to the "
+            "fused velocity. Pixels below this threshold are treated as "
+            "invalid for that sensor. Matches the pipeline coherence_threshold."
+        ),
+    )
 
 
 class ExportConfig(BaseModel):
@@ -106,22 +233,67 @@ class MintPyNetworkConfig(BaseModel):
 class MintPyConfig(BaseModel):
     """MintPy time-series processing settings."""
 
-    reference_lalo: list[float] = Field(default=[-2.496900, 114.312148])
-    tropospheric_correction: str = "ERA5"
+    reference_lalo: list[float] = Field(
+        default=[-2.496900, 114.312148],
+        description=(
+            "Fixed reference point as [lat, lon] for velocity baseline. "
+            "Set to empty list [] to fall back to MintPy auto-selection."
+        ),
+    )
+    reference_min_coherence: float = Field(
+        default=0.7,
+        description="Minimum coherence for reference point (auto-select fallback).",
+    )
+    tropospheric_correction: str = "pyaps"
     unwrap_error_correction: str = "bridging+phase_closure"
     network_modification: MintPyNetworkConfig = Field(default_factory=MintPyNetworkConfig)
+
+    @field_validator("reference_lalo")
+    @classmethod
+    def validate_reference_lalo(cls, v: list[float]) -> list[float]:
+        if len(v) == 0:
+            return v
+        if len(v) != 2:
+            raise ValueError("reference_lalo must be [lat, lon] (2 values) or [] for auto")
+        lat, lon = v
+        if not (-90 <= lat <= 90):
+            raise ValueError(f"reference latitude {lat} out of range [-90, 90]")
+        if not (-180 <= lon <= 180):
+            raise ValueError(f"reference longitude {lon} out of range [-180, 180]")
+        return v
 
 
 class PeatGuardConfig(BaseModel):
     """Root configuration for the PeatGuard pipeline."""
 
+    sensor: Literal["sentinel1", "nisar"] = Field(
+        default="sentinel1",
+        description=(
+            "Active sensor selection. 'sentinel1' uses C-band TOPS mode "
+            "(topsApp). 'nisar' uses L-band stripmap mode (stripmapApp)."
+        ),
+    )
     aoi: AOIConfig
     sentinel1: Sentinel1Config = Field(default_factory=Sentinel1Config)
+    nisar: NISARConfig = Field(default_factory=NISARConfig)
     processing: ProcessingConfig = Field(default_factory=ProcessingConfig)
     classification: ClassificationConfig = Field(default_factory=ClassificationConfig)
+    water_mask: WaterMaskConfig = Field(default_factory=WaterMaskConfig)
+    risk_score: RiskScoreConfig = Field(default_factory=RiskScoreConfig)
+    fusion: FusionConfig = Field(default_factory=FusionConfig)
     export: ExportConfig = Field(default_factory=ExportConfig)
     storage: StorageConfig = Field(default_factory=StorageConfig)
     mintpy: MintPyConfig = Field(default_factory=MintPyConfig)
+
+    @property
+    def is_nisar(self) -> bool:
+        """Return True if the active sensor is NISAR."""
+        return self.sensor == "nisar"
+
+    @property
+    def active_sensor_config(self) -> Sentinel1Config | NISARConfig:
+        """Return the config object for the active sensor."""
+        return self.nisar if self.is_nisar else self.sentinel1
 
 
 def _deep_merge(base: dict, override: dict) -> dict:

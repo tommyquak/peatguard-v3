@@ -45,7 +45,7 @@ def run_download_stage(
     from peatguard.ingest.download import download_scenes
     from peatguard.ingest.search import build_acquisition_stack
 
-    logger.info("=== Stage 1: Data Download (%s) ===", processing_level)
+    logger.info("=== Stage 1: Data Download (%s, sensor=%s) ===", processing_level, config.sensor)
 
     scenes = build_acquisition_stack(
         config, start_date, end_date, processing_level, max_scenes
@@ -67,8 +67,9 @@ def run_insar_stage(
 ) -> list[Path]:
     """Stage 2: InSAR processing for all pairs.
 
-    Generates interferogram pairs and processes them in parallel
-    using ISCE2 topsApp.
+    Generates interferogram pairs and processes them using ISCE2.
+    Routes to topsApp (Sentinel-1 TOPS) or stripmapApp (NISAR L-band)
+    based on the active sensor configuration.
 
     Args:
         config: Pipeline configuration.
@@ -80,9 +81,14 @@ def run_insar_stage(
         List of pair working directories.
     """
     from peatguard.insar.pairs import select_sbas_pairs
-    from peatguard.insar.topsapp import _download_dem, process_pair
+    from peatguard.insar.topsapp import _download_dem
 
-    logger.info("=== Stage 2: InSAR Processing ===")
+    if config.is_nisar:
+        from peatguard.insar.stripmapapp import process_pair
+    else:
+        from peatguard.insar.topsapp import process_pair
+
+    logger.info("=== Stage 2: InSAR Processing (sensor=%s) ===", config.sensor)
 
     # Download DEM once (shared across all pairs). Uses Copernicus GLO-30
     # from AWS (no auth required) with rasterio fallback.
@@ -200,9 +206,10 @@ def run_insar_stage(
                 date_to_zip[date_str] = path
                 break
 
+    sensor_cfg = config.active_sensor_config
     pairs = select_sbas_pairs(
         dates,
-        max_temporal_baseline_days=config.sentinel1.max_temporal_baseline_days,
+        max_temporal_baseline_days=sensor_cfg.max_temporal_baseline_days,
     )
 
     # Register pairs in catalog (best-effort; may fail in ephemeral containers
@@ -352,13 +359,22 @@ def run_insar_stage(
             pass
 
         try:
-            work_dir = process_pair(
-                reference_safe=ref_path,
-                secondary_safe=sec_path,
-                work_dir=pair_dir,
-                config=config,
-                dem_path=dem_path,
-            )
+            if config.is_nisar:
+                work_dir = process_pair(
+                    reference_slc=ref_path,
+                    secondary_slc=sec_path,
+                    work_dir=pair_dir,
+                    config=config,
+                    dem_path=dem_path,
+                )
+            else:
+                work_dir = process_pair(
+                    reference_safe=ref_path,
+                    secondary_safe=sec_path,
+                    work_dir=pair_dir,
+                    config=config,
+                    dem_path=dem_path,
+                )
 
             # Upload merged outputs to GCS immediately after success
             _upload_pair_to_gcs(pair.pair_id, work_dir)
@@ -387,6 +403,101 @@ def run_insar_stage(
     return work_dirs
 
 
+def _estimate_burst_overlaps(
+    arrays: list[np.ndarray],
+    max_search: int = 200,
+    default_overlap: int = 120,
+) -> list[int]:
+    """Estimate azimuth overlap between adjacent burst arrays.
+
+    Sentinel-1 TOPS bursts overlap by ~100-120 lines in azimuth. This
+    function detects the overlap by comparing the trailing edge of burst i
+    with the leading edge of burst i+1 using the center column signal.
+
+    Args:
+        arrays: List of 2D burst arrays (height x width).
+        max_search: Maximum overlap to search for (lines).
+        default_overlap: Fallback if detection is uncertain.
+
+    Returns:
+        List of overlap values (length = len(arrays) - 1).
+    """
+    import numpy as np
+
+    overlaps = []
+    for i in range(len(arrays) - 1):
+        a = arrays[i]
+        b = arrays[i + 1]
+        # Use center column as 1D signal for matching
+        mid_col = a.shape[1] // 2
+        sig_a = a[:, mid_col].astype(np.float64)
+        sig_b = b[:, mid_col].astype(np.float64)
+
+        best_overlap = default_overlap
+        best_diff = float("inf")
+        for candidate in range(20, min(max_search, a.shape[0], b.shape[0])):
+            tail = sig_a[-candidate:]
+            head = sig_b[:candidate]
+            diff = np.mean(np.abs(tail - head))
+            if diff < best_diff:
+                best_diff = diff
+                best_overlap = candidate
+
+        # If signal is constant or detection uncertain, use default
+        sig_range = np.ptp(sig_a)
+        if sig_range > 0 and best_diff / sig_range > 0.1:
+            best_overlap = default_overlap
+
+        overlaps.append(best_overlap)
+    return overlaps
+
+
+def _merge_burst_arrays_with_overlap(
+    arrays: list[np.ndarray],
+    overlaps: list[int],
+) -> np.ndarray:
+    """Merge burst arrays, trimming overlap regions.
+
+    For N bursts with overlaps [o1, o2, ..., o_{N-1}]:
+    - Burst 0: keep rows [0 : height - o1//2]
+    - Burst i (middle): keep rows [o_i//2 : height - o_{i+1}//2]
+    - Burst N-1: keep rows [o_{N-1}//2 : height]
+
+    Args:
+        arrays: List of 2D burst arrays.
+        overlaps: List of overlap sizes between adjacent bursts.
+
+    Returns:
+        Vertically merged array with overlaps removed.
+    """
+    import numpy as np
+
+    n = len(arrays)
+    if n == 1:
+        return arrays[0]
+
+    trimmed = []
+    for i, arr in enumerate(arrays):
+        h = arr.shape[0]
+        top_trim = overlaps[i - 1] // 2 if i > 0 else 0
+        bot_trim = overlaps[i] // 2 if i < n - 1 else 0
+
+        row_start = top_trim
+        row_end = h - bot_trim
+        if row_end <= row_start:
+            # Safety: don't produce empty slice
+            logger.warning(
+                "Burst %d: overlap trimming would produce empty array "
+                "(%d rows, top=%d, bot=%d). Skipping trim.",
+                i, h, top_trim, bot_trim,
+            )
+            trimmed.append(arr)
+        else:
+            trimmed.append(arr[row_start:row_end])
+
+    return np.concatenate(trimmed, axis=0)
+
+
 def _merge_burst_geometry(
     burst_dir: Path,
     output_dir: Path,
@@ -400,8 +511,9 @@ def _merge_burst_geometry(
     (hgt.rdr, lat.rdr, lon.rdr) in geom_reference/.
 
     Each per-burst file is a strip in the azimuth direction. Merging
-    concatenates them vertically, then downsamples by az_looks x rg_looks
-    to match the interferogram resolution.
+    handles the ~100-120 line overlap between adjacent bursts by trimming
+    overlap margins, then downsamples by az_looks x rg_looks to match
+    the interferogram resolution.
     """
     import numpy as np
 
@@ -415,6 +527,29 @@ def _merge_burst_geometry(
             continue
         geom_name = stem.rsplit("_", 1)[0]  # e.g. "hgt"
         geom_types.setdefault(geom_name, []).append(rdr_file)
+
+    # Detect burst overlaps using lat arrays (monotonic in azimuth, most reliable).
+    detected_overlaps = None
+    if "lat" in geom_types:
+        lat_files = geom_types["lat"]
+        lat_arrays = []
+        for bf in lat_files:
+            data = np.fromfile(str(bf), dtype=np.float64)
+            xml_path = bf.with_suffix(".rdr.xml")
+            w = None
+            if xml_path.exists():
+                import xml.etree.ElementTree as ET
+                tree = ET.parse(str(xml_path))
+                for prop in tree.iter("property"):
+                    if prop.get("name", "") == "width":
+                        val = prop.find("value")
+                        if val is not None and val.text:
+                            w = int(val.text)
+            if w:
+                data = data.reshape(-1, w)
+            lat_arrays.append(data)
+        detected_overlaps = _estimate_burst_overlaps(lat_arrays)
+        logger.info("Detected burst overlaps from lat: %s", detected_overlaps)
 
     for geom_name, burst_files in sorted(geom_types.items()):
         output_file = output_dir / f"{geom_name}.rdr"
@@ -444,7 +579,7 @@ def _merge_burst_geometry(
         # Determine data type (lat/lon are float64 in ISCE2)
         dtype = np.float64 if geom_name in ("lat", "lon") else np.float32
 
-        # Concatenate bursts vertically
+        # Read burst arrays
         arrays = []
         for bf in burst_files:
             data = np.fromfile(str(bf), dtype=dtype)
@@ -452,7 +587,20 @@ def _merge_burst_geometry(
                 data = data.reshape(-1, width * n_bands)
             arrays.append(data)
 
-        merged = np.concatenate(arrays, axis=0)
+        # Merge with overlap trimming
+        if detected_overlaps is not None and len(detected_overlaps) == len(arrays) - 1:
+            overlaps = detected_overlaps
+        elif len(arrays) > 1:
+            overlaps = _estimate_burst_overlaps(arrays)
+            logger.info("Estimated overlaps for %s: %s", geom_name, overlaps)
+        else:
+            overlaps = []
+
+        if overlaps:
+            merged = _merge_burst_arrays_with_overlap(arrays, overlaps)
+        else:
+            merged = np.concatenate(arrays, axis=0) if len(arrays) > 1 else arrays[0]
+
         full_h, full_w_bands = merged.shape
 
         # Multilook (block-average) to match interferogram resolution
@@ -746,6 +894,132 @@ def run_backscatter_stage(
     return composite_path
 
 
+def _run_fusion(
+    config: PeatGuardConfig,
+    output_dir: Path,
+    existing_products: dict[str, Path],
+) -> dict[str, Path]:
+    """Run multi-sensor fusion if both C-band and L-band products are available.
+
+    Attempts to locate C-band and L-band velocity and coherence products,
+    either from local storage or by downloading from GCS. If both sensor
+    datasets are found, performs coherence-weighted fusion and re-runs
+    subsidence classification and risk scoring on the fused velocity.
+
+    Args:
+        config: Pipeline configuration (must have fusion.enabled=True).
+        output_dir: Directory for output products.
+        existing_products: Products already generated in this analysis run.
+
+    Returns:
+        Dict of fusion product names to output paths. Empty if fusion
+        inputs are not available.
+    """
+    from peatguard.analysis.fusion import generate_fusion_products
+
+    logger.info("=== Multi-sensor fusion check ===")
+
+    # Define expected paths for both sensors' products.
+    # Convention: C-band products use default names, L-band products use
+    # the "nisar_" prefix to distinguish them.
+    c_vel_path = output_dir / "subsidence_velocity.tif"
+    c_coh_path = output_dir / "coherence_median.tif"
+    l_vel_path = output_dir / "nisar_subsidence_velocity.tif"
+    l_coh_path = output_dir / "nisar_coherence_median.tif"
+
+    # Try downloading missing products from GCS
+    if config.storage.gcs_bucket:
+        from peatguard.export.gcs import download_file
+
+        gcs_products = {
+            c_vel_path: "products/subsidence_velocity.tif",
+            c_coh_path: "products/coherence_median.tif",
+            l_vel_path: "products/nisar_subsidence_velocity.tif",
+            l_coh_path: "products/nisar_coherence_median.tif",
+        }
+        for local_path, blob_name in gcs_products.items():
+            if not local_path.exists():
+                try:
+                    local_path.parent.mkdir(parents=True, exist_ok=True)
+                    download_file(config.storage.gcs_bucket, blob_name, local_path)
+                    logger.info("Downloaded %s from GCS", blob_name)
+                except Exception:
+                    pass  # Not all products may exist
+
+    # Check that all four inputs exist
+    missing = []
+    for label, path in [
+        ("C-band velocity", c_vel_path),
+        ("C-band coherence", c_coh_path),
+        ("L-band velocity", l_vel_path),
+        ("L-band coherence", l_coh_path),
+    ]:
+        if not path.exists():
+            missing.append(label)
+
+    if missing:
+        logger.info(
+            "Fusion skipped: missing inputs: %s. "
+            "Run the pipeline for both sentinel1 and nisar sensors to generate all products.",
+            ", ".join(missing),
+        )
+        return {}
+
+    # Generate fusion products
+    fusion_cfg = config.fusion
+    fusion_products = generate_fusion_products(
+        c_vel_path=c_vel_path,
+        c_coh_path=c_coh_path,
+        l_vel_path=l_vel_path,
+        l_coh_path=l_coh_path,
+        output_dir=output_dir,
+        nodata=config.export.nodata,
+        min_coherence=fusion_cfg.min_coherence,
+        c_band_weight_boost=fusion_cfg.c_band_weight_boost,
+    )
+
+    # Re-run subsidence classification on the fused velocity
+    fused_vel_path = fusion_products.get("fused_velocity")
+    if fused_vel_path and fused_vel_path.exists():
+        from peatguard.analysis.subsidence_class import classify_subsidence_file
+
+        fused_class_path = output_dir / "fused_subsidence_class.tif"
+        water_mask_path = existing_products.get("water_mask")
+        classify_subsidence_file(
+            fused_vel_path,
+            fused_class_path,
+            config.classification,
+            water_mask_path=water_mask_path,
+        )
+        fusion_products["fused_subsidence_class"] = fused_class_path
+        logger.info("Fused subsidence classification: %s", fused_class_path)
+
+        # Re-run risk scoring on fused velocity if canal distance is available
+        canal_dist_path = existing_products.get("canal_distance")
+        if canal_dist_path and canal_dist_path.exists():
+            from peatguard.analysis.risk_score import generate_risk_map
+
+            fused_risk_path = output_dir / "fused_canal_risk.tif"
+            risk_cfg = config.risk_score
+            generate_risk_map(
+                fused_vel_path,
+                canal_dist_path,
+                fused_risk_path,
+                proximity_weight=risk_cfg.proximity_weight,
+                subsidence_weight=risk_cfg.subsidence_weight,
+                max_influence_m=risk_cfg.max_influence_m,
+                severe_velocity_mm_yr=risk_cfg.severe_velocity_mm_yr,
+                water_mask_path=water_mask_path,
+            )
+            fusion_products["fused_canal_risk"] = fused_risk_path
+            logger.info("Fused risk score: %s", fused_risk_path)
+        else:
+            logger.info("Canal distance not available, skipping fused risk scoring")
+
+    logger.info("Fusion produced %d products", len(fusion_products))
+    return fusion_products
+
+
 def run_analysis_stage(
     config: PeatGuardConfig,
     velocity_path: Path,
@@ -755,7 +1029,8 @@ def run_analysis_stage(
 
     Canal detection and risk scoring require VV backscatter and are
     skipped if vv_path is not provided. Subsidence classification
-    always runs.
+    always runs. Water mask generation runs when VV backscatter is
+    available and water_mask.enabled is True in config.
 
     Args:
         config: Pipeline configuration.
@@ -771,13 +1046,9 @@ def run_analysis_stage(
 
     output_dir = config.storage.output_dir
     products = {}
+    water_mask_path = None
 
-    # Subsidence classification (always runs)
-    class_path = output_dir / "subsidence_class.tif"
-    classify_subsidence_file(velocity_path, class_path, config.classification)
-    products["subsidence_class"] = class_path
-
-    # Canal detection + risk scoring (requires VV backscatter)
+    # Canal detection + water mask + risk scoring (requires VV backscatter)
     if vv_path and vv_path.exists():
         from peatguard.analysis.canal_detect import detect_canals
         from peatguard.analysis.risk_score import generate_risk_map
@@ -788,71 +1059,115 @@ def run_analysis_stage(
         products["canal_mask"] = canal_mask_path
         products["canal_distance"] = canal_dist_path
 
+        # Water mask generation (uses VV backscatter, excludes canal pixels)
+        if config.water_mask.enabled:
+            from peatguard.analysis.water_mask import generate_water_mask
+
+            water_mask_path = output_dir / "water_mask.tif"
+            canal_for_exclusion = canal_mask_path if config.water_mask.exclude_canals else None
+            generate_water_mask(
+                vv_path,
+                water_mask_path,
+                canal_mask_path=canal_for_exclusion,
+                water_config=config.water_mask,
+                is_db=False,  # vv_median.tif is linear scale
+            )
+            products["water_mask"] = water_mask_path
+            logger.info("Water mask generated: %s", water_mask_path)
+        else:
+            logger.info("Water mask disabled in config, skipping")
+
+    # Subsidence classification (always runs, uses water mask if available)
+    class_path = output_dir / "subsidence_class.tif"
+    classify_subsidence_file(
+        velocity_path, class_path, config.classification,
+        water_mask_path=water_mask_path,
+    )
+    products["subsidence_class"] = class_path
+
+    # Risk scoring and CRS alignment (requires VV backscatter products)
+    if vv_path and vv_path.exists():
         # Reproject velocity to match backscatter/canal grid (UTM).
         # This ensures all products share the same CRS, extent, and pixel grid.
         import rasterio
         from rasterio.warp import reproject, Resampling
         vel_ds = rasterio.open(velocity_path)
         dist_ds = rasterio.open(canal_dist_path)
-
-        if vel_ds.crs != dist_ds.crs or vel_ds.shape != dist_ds.shape:
-            logger.info("Reprojecting velocity from %s to %s (%dx%d)",
-                        vel_ds.crs, dist_ds.crs, dist_ds.width, dist_ds.height)
-            aligned_vel_path = output_dir / "subsidence_velocity_utm.tif"
-            aligned_class_path = output_dir / "subsidence_class_utm.tif"
-
-            # Reproject velocity to backscatter grid
-            with rasterio.open(
-                aligned_vel_path, "w", driver="GTiff",
-                height=dist_ds.height, width=dist_ds.width,
-                count=1, dtype="float32",
-                crs=dist_ds.crs, transform=dist_ds.transform,
-                nodata=-9999.0,
-            ) as dst:
-                reproject(
-                    source=rasterio.band(vel_ds, 1),
-                    destination=rasterio.band(dst, 1),
-                    src_transform=vel_ds.transform,
-                    src_crs=vel_ds.crs,
-                    dst_transform=dist_ds.transform,
-                    dst_crs=dist_ds.crs,
-                    resampling=Resampling.bilinear,
+        try:
+            if vel_ds.crs != dist_ds.crs or vel_ds.shape != dist_ds.shape:
+                logger.warning(
+                    "CRS mismatch in analysis stage: velocity %s != backscatter %s. "
+                    "This should not be needed if velocity export uses output_crs. "
+                    "Reprojecting to %s (%dx%d)",
+                    vel_ds.crs, dist_ds.crs, dist_ds.crs, dist_ds.width, dist_ds.height,
                 )
+                aligned_vel_path = output_dir / "subsidence_velocity_utm.tif"
+                aligned_class_path = output_dir / "subsidence_class_utm.tif"
 
-            # Also reproject classification to same grid
-            class_ds = rasterio.open(class_path)
-            with rasterio.open(
-                aligned_class_path, "w", driver="GTiff",
-                height=dist_ds.height, width=dist_ds.width,
-                count=1, dtype="uint8",
-                crs=dist_ds.crs, transform=dist_ds.transform,
-                nodata=0,
-            ) as dst:
-                reproject(
-                    source=rasterio.band(class_ds, 1),
-                    destination=rasterio.band(dst, 1),
-                    src_transform=class_ds.transform,
-                    src_crs=class_ds.crs,
-                    dst_transform=dist_ds.transform,
-                    dst_crs=dist_ds.crs,
-                    resampling=Resampling.nearest,
-                )
-            class_ds.close()
-            products["subsidence_class"] = aligned_class_path
+                # Reproject velocity to backscatter grid
+                with rasterio.open(
+                    aligned_vel_path, "w", driver="GTiff",
+                    height=dist_ds.height, width=dist_ds.width,
+                    count=1, dtype="float32",
+                    crs=dist_ds.crs, transform=dist_ds.transform,
+                    nodata=-9999.0,
+                ) as dst:
+                    reproject(
+                        source=rasterio.band(vel_ds, 1),
+                        destination=rasterio.band(dst, 1),
+                        src_transform=vel_ds.transform,
+                        src_crs=vel_ds.crs,
+                        dst_transform=dist_ds.transform,
+                        dst_crs=dist_ds.crs,
+                        resampling=Resampling.bilinear,
+                    )
 
-            vel_for_risk = aligned_vel_path
-            products["subsidence_velocity_utm"] = aligned_vel_path
-        else:
-            vel_for_risk = velocity_path
+                # Also reproject classification to same grid
+                with rasterio.open(class_path) as class_ds:
+                    with rasterio.open(
+                        aligned_class_path, "w", driver="GTiff",
+                        height=dist_ds.height, width=dist_ds.width,
+                        count=1, dtype="uint8",
+                        crs=dist_ds.crs, transform=dist_ds.transform,
+                        nodata=0,
+                    ) as dst:
+                        reproject(
+                            source=rasterio.band(class_ds, 1),
+                            destination=rasterio.band(dst, 1),
+                            src_transform=class_ds.transform,
+                            src_crs=class_ds.crs,
+                            dst_transform=dist_ds.transform,
+                            dst_crs=dist_ds.crs,
+                            resampling=Resampling.nearest,
+                        )
+                products["subsidence_class"] = aligned_class_path
 
-        dist_ds.close()
-        vel_ds.close()
+                vel_for_risk = aligned_vel_path
+                products["subsidence_velocity_utm"] = aligned_vel_path
+            else:
+                vel_for_risk = velocity_path
+        finally:
+            dist_ds.close()
+            vel_ds.close()
 
         risk_path = output_dir / "canal_risk.tif"
-        generate_risk_map(vel_for_risk, canal_dist_path, risk_path)
+        risk_cfg = config.risk_score
+        generate_risk_map(
+            vel_for_risk, canal_dist_path, risk_path,
+            proximity_weight=risk_cfg.proximity_weight,
+            subsidence_weight=risk_cfg.subsidence_weight,
+            max_influence_m=risk_cfg.max_influence_m,
+            severe_velocity_mm_yr=risk_cfg.severe_velocity_mm_yr,
+            water_mask_path=water_mask_path,
+        )
         products["canal_risk"] = risk_path
     else:
         logger.info("VV backscatter not available, skipping canal detection and risk scoring")
+
+    # Multi-sensor fusion: combine C-band and L-band velocity if both available
+    if config.fusion.enabled:
+        fusion_products = _run_fusion(config, output_dir, products)
+        products.update(fusion_products)
 
     # Upload products to GCS
     if config.storage.gcs_bucket:

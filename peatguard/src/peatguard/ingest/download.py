@@ -1,8 +1,8 @@
-"""Sentinel-1 scene download manager.
+"""SAR scene download manager.
 
 Handles authenticated downloads from ASF DAAC with streaming support,
-progress tracking, and catalog integration. Uses NASA Earthdata
-credentials stored in ~/.netrc.
+progress tracking, and catalog integration. Supports both Sentinel-1
+and NISAR products. Uses NASA Earthdata credentials stored in ~/.netrc.
 
 Downloads are streamed in chunks to avoid buffering entire SLC files
 (4-6 GB each) in memory, which is critical for Cloud Run's memory limits.

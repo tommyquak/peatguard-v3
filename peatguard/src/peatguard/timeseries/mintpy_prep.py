@@ -1,16 +1,18 @@
 """MintPy data preparation from ISCE2 outputs.
 
-Converts ISCE2 topsApp output directory structure into MintPy's
-expected HDF5 input format. MintPy requires an ifgramStack.h5
+Converts ISCE2 topsApp/stripmapApp output directory structure into
+MintPy's expected HDF5 input format. MintPy requires an ifgramStack.h5
 (interferogram stack) and geometryGeo.h5 (geometry in geo coordinates).
 
-This module generates the MintPy configuration template and calls
-MintPy's prep_isce.py utility for the format conversion.
+Supports both Sentinel-1 (C-band, topsApp) and NISAR (L-band,
+stripmapApp) with sensor-appropriate SAR parameters in the HDF5
+metadata (wavelength, orbit height, pixel sizes).
 """
 
 from __future__ import annotations
 
 import logging
+import os
 import subprocess
 import textwrap
 from pathlib import Path
@@ -19,6 +21,60 @@ from typing import Optional
 from peatguard.config import PeatGuardConfig
 
 logger = logging.getLogger(__name__)
+
+
+def _get_sar_params(config: PeatGuardConfig) -> dict:
+    """Return sensor-specific SAR parameters for HDF5 metadata.
+
+    These parameters are required by MintPy for phase-to-displacement
+    conversion (wavelength), slant range computation (starting range,
+    range pixel size), and other corrections.
+
+    Args:
+        config: Pipeline configuration with active sensor selection.
+
+    Returns:
+        Dict of SAR parameter strings suitable for HDF5 attributes.
+    """
+    if config.is_nisar:
+        nisar = config.nisar
+        # NISAR L-band stripmap: different multilook factors
+        az_looks = 5
+        rg_looks = 11
+        return {
+            "WAVELENGTH": str(nisar.wavelength_m),
+            "HEIGHT": str(nisar.orbit_height_m),
+            "STARTING_RANGE": "900000.0",  # approximate slant range, meters
+            "RANGE_PIXEL_SIZE": str(nisar.range_pixel_size_m * rg_looks),
+            "AZIMUTH_PIXEL_SIZE": str(nisar.azimuth_pixel_size_m * az_looks),
+            "EARTH_RADIUS": "6371000.0",
+            "CENTER_LINE_UTC": "21600.0",  # ~06:00 UTC (typical NISAR ascending)
+            "PLATFORM": "NISAR",
+            "ORBIT_DIRECTION": "ASCENDING",
+            "ANTENNA_SIDE": "-1",
+            "ALOOKS": str(az_looks),
+            "RLOOKS": str(rg_looks),
+            "HEADING": "-13.0",  # typical ascending, equatorial
+            "PRF": "1740.0",  # approximate NISAR L-SAR PRF
+        }
+    else:
+        # Sentinel-1 C-band TOPS (existing hardcoded values)
+        return {
+            "WAVELENGTH": "0.05546576",
+            "HEIGHT": "693000.0",
+            "STARTING_RANGE": "800000.0",
+            "RANGE_PIXEL_SIZE": str(2.329562 * 9),
+            "AZIMUTH_PIXEL_SIZE": str(13.97 * 3),
+            "EARTH_RADIUS": "6371000.0",
+            "CENTER_LINE_UTC": "79200.0",
+            "PLATFORM": "Sentinel-1A",
+            "ORBIT_DIRECTION": "DESCENDING",
+            "ANTENNA_SIDE": "-1",
+            "ALOOKS": "3",
+            "RLOOKS": "9",
+            "HEADING": "-166.0",
+            "PRF": "486.486",
+        }
 
 _MINTPY_TEMPLATE = textwrap.dedent("""\
     ##----------------- PeatGuard MintPy Configuration -----------------##
@@ -50,10 +106,7 @@ _MINTPY_TEMPLATE = textwrap.dedent("""\
     ## mintpy.subset.lalo         = {south}:{north},{west}:{east}
 
     ########## reference point
-    ## Auto-select from highest coherence unmasked pixel. MintPy caches
-    ## the choice in smallbaselineApp.cfg for subsequent steps.
-    mintpy.reference.yx        = auto
-    mintpy.reference.minCoherence = 0.7
+{reference_point_block}
 
     ########## network modification
     mintpy.network.coherenceBased  = {coh_based}
@@ -62,8 +115,10 @@ _MINTPY_TEMPLATE = textwrap.dedent("""\
     ########## unwrapping error correction (skip -- MCF unwrapper handles this)
     mintpy.unwrapError.method      = no
 
-    ########## tropospheric delay correction (skip for now -- ERA5 needs auth)
-    mintpy.troposphericDelay.method     = no
+    ########## tropospheric delay correction
+    mintpy.troposphericDelay.method          = {tropo_method}
+    mintpy.troposphericDelay.weatherModel    = ERA5
+    mintpy.troposphericDelay.weatherDir      = {weather_dir}
 
     ########## topographic residual (DEM error) -- skip for flat peatlands
     mintpy.topographicResidual         = no
@@ -79,6 +134,52 @@ _MINTPY_TEMPLATE = textwrap.dedent("""\
     ########## geocoding (skip -- export handles this separately)
     mintpy.geocode                     = no
 """)
+
+
+def _is_cds_api_available() -> bool:
+    """Check whether CDS API credentials are available.
+
+    Credentials can come from:
+    1. Environment variables CDS_API_URL and CDS_API_KEY
+    2. A ~/.cdsapirc file
+
+    Returns:
+        True if CDS API credentials are configured.
+    """
+    if os.environ.get("CDS_API_KEY"):
+        return True
+    cdsapirc = Path.home() / ".cdsapirc"
+    if cdsapirc.exists() and cdsapirc.stat().st_size > 0:
+        return True
+    return False
+
+
+def _ensure_cdsapirc() -> None:
+    """Create ~/.cdsapirc from environment variables if it does not exist.
+
+    PyAPS reads CDS API credentials from ~/.cdsapirc. When running in
+    Cloud Run, the credentials are injected as environment variables
+    (CDS_API_URL and CDS_API_KEY) rather than baked into the image.
+    This function bridges the two by writing the rc file at runtime.
+    """
+    cdsapirc = Path.home() / ".cdsapirc"
+    if cdsapirc.exists():
+        logger.debug("CDS API config already exists: %s", cdsapirc)
+        return
+
+    api_url = os.environ.get("CDS_API_URL", "https://cds.climate.copernicus.eu/api")
+    api_key = os.environ.get("CDS_API_KEY", "")
+
+    if not api_key:
+        logger.warning(
+            "CDS_API_KEY environment variable not set and ~/.cdsapirc not found. "
+            "ERA5 tropospheric correction will be skipped."
+        )
+        return
+
+    cdsapirc.write_text(f"url: {api_url}\nkey: {api_key}\n")
+    cdsapirc.chmod(0o600)
+    logger.info("Created %s from environment variables", cdsapirc)
 
 
 def generate_mintpy_config(
@@ -109,6 +210,53 @@ def generate_mintpy_config(
     coh_based = "yes" if config.mintpy.network_modification.coherence_based else "no"
     min_coh = config.mintpy.network_modification.min_coherence
 
+    # Build reference point configuration from config.
+    # A fixed lat/lon ensures deterministic velocity baselines across runs.
+    ref_lalo = config.mintpy.reference_lalo
+    if ref_lalo and len(ref_lalo) == 2:
+        reference_point_block = (
+            "    ## Fixed reference point on stable ground (configured in YAML)\n"
+            f"    mintpy.reference.lalo       = {ref_lalo[0]}, {ref_lalo[1]}\n"
+            f"    mintpy.reference.minCoherence = {config.mintpy.reference_min_coherence}"
+        )
+        logger.info(
+            "Using fixed reference point: lat=%.6f, lon=%.6f",
+            ref_lalo[0], ref_lalo[1],
+        )
+    else:
+        reference_point_block = (
+            "    ## Auto-select from highest coherence unmasked pixel\n"
+            "    mintpy.reference.yx        = auto\n"
+            f"    mintpy.reference.minCoherence = {config.mintpy.reference_min_coherence}"
+        )
+        logger.info(
+            "No fixed reference point configured; using MintPy auto-selection "
+            "(minCoherence=%.2f)",
+            config.mintpy.reference_min_coherence,
+        )
+
+    # Determine tropospheric correction method.
+    # Use PyAPS (ERA5) when the config requests it AND CDS API credentials are available.
+    # Fall back to no correction otherwise to avoid a hard failure.
+    tropo_method = "no"
+    tropo_setting = config.mintpy.tropospheric_correction.lower()
+    if tropo_setting in ("pyaps", "era5"):
+        _ensure_cdsapirc()
+        if _is_cds_api_available():
+            tropo_method = "pyaps"
+            logger.info(
+                "ERA5 tropospheric correction enabled (weather dir: %s)", weather_dir
+            )
+        else:
+            logger.warning(
+                "Tropospheric correction requested (%s) but CDS API credentials "
+                "are not available. Falling back to no correction. Set CDS_API_KEY "
+                "env var or create ~/.cdsapirc to enable ERA5 correction.",
+                tropo_setting,
+            )
+    else:
+        logger.info("Tropospheric correction disabled by config (method=%s)", tropo_setting)
+
     template_content = _MINTPY_TEMPLATE.format(
         isce_dir=str(isce_dir),
         south=south,
@@ -117,6 +265,9 @@ def generate_mintpy_config(
         east=east,
         coh_based=coh_based,
         min_coh=min_coh,
+        reference_point_block=reference_point_block,
+        tropo_method=tropo_method,
+        weather_dir=str(weather_dir),
     )
 
     config_path = mintpy_dir / "peatguard.cfg"
@@ -274,26 +425,15 @@ def prep_data_for_mintpy(
         # Drop lists for network modification
         drop_date = f.create_dataset("dropIfgram", data=np.ones(n_pairs, dtype=np.bool_))
 
-        # Sentinel-1 SAR parameters (required by MintPy)
+        # SAR parameters (required by MintPy for phase-to-displacement conversion)
+        sar_params = _get_sar_params(config)
         f.attrs["PROCESSOR"] = "isce"
         f.attrs["FILE_TYPE"] = "ifgramStack"
         f.attrs["UNIT"] = "radian"
         f.attrs["LENGTH"] = str(length)
         f.attrs["WIDTH"] = str(width)
-        f.attrs["WAVELENGTH"] = "0.05546576"  # C-band, meters
-        f.attrs["HEIGHT"] = "693000.0"  # Sentinel-1 orbit altitude, meters
-        f.attrs["STARTING_RANGE"] = "800000.0"  # approximate, meters
-        f.attrs["RANGE_PIXEL_SIZE"] = str(2.329562 * 9)  # multilooked by rg_looks=9
-        f.attrs["AZIMUTH_PIXEL_SIZE"] = str(13.97 * 3)  # multilooked by az_looks=3
-        f.attrs["EARTH_RADIUS"] = "6371000.0"
-        f.attrs["CENTER_LINE_UTC"] = "79200.0"  # ~22:00 UTC (typical for this orbit)
-        f.attrs["PLATFORM"] = "Sentinel-1A"
-        f.attrs["ORBIT_DIRECTION"] = "DESCENDING"
-        f.attrs["ANTENNA_SIDE"] = "-1"
-        f.attrs["ALOOKS"] = "3"
-        f.attrs["RLOOKS"] = "9"
-        f.attrs["HEADING"] = "-166.0"  # typical for descending, equatorial
-        f.attrs["PRF"] = "486.486"  # Sentinel-1 PRF
+        for key, value in sar_params.items():
+            f.attrs[key] = value
 
     logger.info("ifgramStack.h5 created: %d pairs, %dx%d", n_pairs, length, width)
 
@@ -357,8 +497,9 @@ def prep_data_for_mintpy(
 
         # Slant range distance (needed by dem_error.py for DEM correction)
         # Computed from starting range + pixel index * range pixel size
-        starting_range = 800000.0  # approximate, meters
-        range_pixel_size = 2.329562 * 9  # multilooked
+        sar_params = _get_sar_params(config)
+        starting_range = float(sar_params["STARTING_RANGE"])
+        range_pixel_size = float(sar_params["RANGE_PIXEL_SIZE"])
         slant_range = np.zeros((length, width), dtype=np.float32)
         for col in range(width):
             slant_range[:, col] = starting_range + col * range_pixel_size
@@ -368,16 +509,8 @@ def prep_data_for_mintpy(
         f.attrs["FILE_TYPE"] = "geometry"
         f.attrs["LENGTH"] = str(length)
         f.attrs["WIDTH"] = str(width)
-        f.attrs["WAVELENGTH"] = "0.05546576"
-        f.attrs["HEIGHT"] = "693000.0"
-        f.attrs["STARTING_RANGE"] = "800000.0"
-        f.attrs["RANGE_PIXEL_SIZE"] = str(2.329562 * 9)
-        f.attrs["AZIMUTH_PIXEL_SIZE"] = str(13.97 * 3)
-        f.attrs["EARTH_RADIUS"] = "6371000.0"
-        f.attrs["PLATFORM"] = "Sentinel-1A"
-        f.attrs["ORBIT_DIRECTION"] = "DESCENDING"
-        f.attrs["ALOOKS"] = "3"
-        f.attrs["RLOOKS"] = "9"
+        for key, value in sar_params.items():
+            f.attrs[key] = value
 
     logger.info("geometryRadar.h5 created")
     return ifgram_file, geom_file

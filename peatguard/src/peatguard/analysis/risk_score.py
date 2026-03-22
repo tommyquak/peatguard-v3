@@ -25,35 +25,34 @@ logger = logging.getLogger(__name__)
 
 def compute_proximity_risk(
     distance_m: np.ndarray,
-    max_influence_m: float = 1000.0,
+    max_influence_m: float = 1200.0,
 ) -> np.ndarray:
     """Compute canal proximity risk factor (0-1).
 
-    Risk decreases exponentially with distance from the canal.
-    Pixels beyond max_influence_m are assigned zero proximity risk.
+    Uses linear decay based on the Dupuit equation approximation:
+    water table drawdown in tropical peat is roughly linear with
+    distance from drainage canals. Hooijer et al. (2012) and
+    Jaenicke et al. (2010) found drainage effects extend 1-1.5 km.
 
     Args:
         distance_m: 2D array of distances to nearest canal in meters.
         max_influence_m: Maximum influence distance in meters.
+            Default 1200m from Hooijer et al. (2012).
 
     Returns:
         2D array of proximity risk scores (0-1, higher = closer to canal).
     """
-    # Exponential decay with distance
+    # Linear decay: risk = max(0, 1 - d/R)
     # At distance 0: risk = 1.0
-    # At max_influence_m: risk ~ 0.05
-    decay_rate = 3.0 / max_influence_m
-    proximity_risk = np.exp(-decay_rate * distance_m)
-
-    # Zero out beyond influence distance
-    proximity_risk[distance_m > max_influence_m] = 0.0
+    # At max_influence_m: risk = 0.0
+    proximity_risk = np.clip(1.0 - distance_m / max_influence_m, 0.0, 1.0)
 
     return proximity_risk.astype(np.float32)
 
 
 def compute_subsidence_risk(
     velocity_mm_yr: np.ndarray,
-    severe_threshold: float = -50.0,
+    severe_threshold: float = -40.0,
     nodata: float = -9999.0,
 ) -> np.ndarray:
     """Compute subsidence severity risk factor (0-1).
@@ -82,8 +81,8 @@ def compute_subsidence_risk(
 def compute_combined_risk(
     proximity_risk: np.ndarray,
     subsidence_risk: np.ndarray,
-    proximity_weight: float = 0.4,
-    subsidence_weight: float = 0.6,
+    proximity_weight: float = 0.45,
+    subsidence_weight: float = 0.55,
 ) -> np.ndarray:
     """Combine proximity and subsidence risk into a single score.
 
@@ -108,9 +107,11 @@ def generate_risk_map(
     velocity_path: Path,
     distance_path: Path,
     output_path: Path,
-    proximity_weight: float = 0.4,
-    subsidence_weight: float = 0.6,
-    max_influence_m: float = 1000.0,
+    proximity_weight: float = 0.45,
+    subsidence_weight: float = 0.55,
+    max_influence_m: float = 1200.0,
+    severe_velocity_mm_yr: float = -40.0,
+    water_mask_path: Optional[Path] = None,
 ) -> Path:
     """Generate a combined risk score map from velocity and distance rasters.
 
@@ -121,6 +122,10 @@ def generate_risk_map(
         proximity_weight: Weight for canal proximity risk.
         subsidence_weight: Weight for subsidence risk.
         max_influence_m: Maximum canal influence distance.
+        water_mask_path: Optional path to water mask GeoTIFF.
+            Water pixels are excluded from the risk score (set to
+            nodata) because they are not peatland and should not
+            contribute to degradation risk assessment.
 
     Returns:
         Path to the risk score GeoTIFF.
@@ -136,7 +141,9 @@ def generate_risk_map(
     nodata = vel_meta["nodata"] if vel_meta["nodata"] is not None else -9999.0
 
     proximity_risk = compute_proximity_risk(distance, max_influence_m)
-    subsidence_risk = compute_subsidence_risk(velocity, nodata=nodata)
+    subsidence_risk = compute_subsidence_risk(
+        velocity, severe_threshold=severe_velocity_mm_yr, nodata=nodata
+    )
     combined = compute_combined_risk(
         proximity_risk,
         subsidence_risk,
@@ -146,14 +153,53 @@ def generate_risk_map(
 
     # Mark nodata pixels
     invalid = (velocity == nodata) | ~np.isfinite(velocity)
+
+    # Exclude water pixels from risk score
+    if water_mask_path is not None and water_mask_path.exists():
+        wm_data, wm_meta = read_raster(water_mask_path)
+        water = wm_data[0].astype(bool)
+
+        # Handle shape mismatch by reprojecting water mask
+        if water.shape != velocity.shape:
+            import rasterio
+            from rasterio.warp import Resampling, reproject
+
+            logger.info(
+                "Reprojecting water mask to risk grid (%s -> %s)",
+                water.shape,
+                velocity.shape,
+            )
+            wm_reprojected = np.zeros(velocity.shape, dtype=np.uint8)
+            reproject(
+                source=water.astype(np.uint8),
+                destination=wm_reprojected,
+                src_transform=wm_meta["transform"],
+                src_crs=wm_meta["crs"],
+                dst_transform=vel_meta["transform"],
+                dst_crs=vel_meta["crs"],
+                resampling=Resampling.nearest,
+            )
+            water = wm_reprojected.astype(bool)
+
+        n_water_excluded = (water & ~invalid).sum()
+        invalid = invalid | water
+        logger.info(
+            "Water mask applied to risk score: %d water pixels excluded",
+            n_water_excluded,
+        )
+
     combined[invalid] = -9999.0
 
-    logger.info(
-        "Risk map: min=%.3f, max=%.3f, mean=%.3f (valid pixels)",
-        np.nanmin(combined[~invalid]),
-        np.nanmax(combined[~invalid]),
-        np.nanmean(combined[~invalid]),
-    )
+    valid_mask = ~invalid
+    if valid_mask.any():
+        logger.info(
+            "Risk map: min=%.3f, max=%.3f, mean=%.3f (valid pixels)",
+            np.nanmin(combined[valid_mask]),
+            np.nanmax(combined[valid_mask]),
+            np.nanmean(combined[valid_mask]),
+        )
+    else:
+        logger.warning("Risk map: no valid pixels")
 
     return write_cog(
         data=combined,

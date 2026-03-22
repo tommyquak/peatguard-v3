@@ -41,7 +41,9 @@ RUN pip install --no-cache-dir \
     "click>=8.1.0" \
     "tqdm>=4.66.0" \
     "google-cloud-storage>=2.14.0" \
-    "google-cloud-run>=0.10.0"
+    "google-cloud-run>=0.10.0" \
+    "cdsapi>=0.6.0" \
+    "pyaps3>=0.3.0"
 
 # Set PROJ and ISCE2 environment variables
 ENV PROJ_LIB=/opt/conda/share/proj
@@ -59,8 +61,17 @@ COPY . /app
 WORKDIR /app
 RUN pip install --no-cache-dir .
 
+# CDS API key for ERA5 tropospheric correction (injected at runtime via env vars).
+# The entrypoint script writes ~/.cdsapirc from CDS_API_URL + CDS_API_KEY if set.
+RUN printf '#!/bin/sh\n\
+if [ -n "$CDS_API_KEY" ]; then\n\
+  echo "url: ${CDS_API_URL:-https://cds.climate.copernicus.eu/api}" > ~/.cdsapirc\n\
+  echo "key: ${CDS_API_KEY}" >> ~/.cdsapirc\n\
+fi\n\
+exec "$@"\n' > /entrypoint.sh && chmod +x /entrypoint.sh
+
 # Default working directory for processing
 WORKDIR /workspace
 
-ENTRYPOINT ["peatguard"]
+ENTRYPOINT ["/entrypoint.sh", "peatguard"]
 CMD ["--help"]
