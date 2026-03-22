@@ -217,7 +217,8 @@ def generate_mintpy_config(
         reference_point_block = (
             "    ## Fixed reference point on stable ground (configured in YAML)\n"
             f"    mintpy.reference.lalo       = {ref_lalo[0]}, {ref_lalo[1]}\n"
-            f"    mintpy.reference.minCoherence = {config.mintpy.reference_min_coherence}"
+            f"    mintpy.reference.minCoherence = {config.mintpy.reference_min_coherence}\n"
+            "    mintpy.reference.maskFile    = no"
         )
         logger.info(
             "Using fixed reference point: lat=%.6f, lon=%.6f",

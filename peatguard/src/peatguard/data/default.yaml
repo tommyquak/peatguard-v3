@@ -74,7 +74,7 @@ fusion:
   # velocity maps using coherence-weighted averaging. Only runs when both
   # sensor products are available (e.g., after running separate sentinel1
   # and nisar pipeline passes).
-  enabled: true                    # produce fused products when both sensors available
+  enabled: false                   # enable when NISAR L-band data is available for AOI
   c_band_weight_boost: 1.0        # multiplicative boost for C-band weight (1.0 = no boost)
   min_coherence: 0.3              # minimum coherence for a sensor to contribute
 
