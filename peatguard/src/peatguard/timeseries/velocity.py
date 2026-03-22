@@ -163,8 +163,8 @@ def export_velocity(
     if config is not None:
         from rasterio.transform import from_bounds
         west, south, east, north = config.aoi.bbox
-        # Add buffer (0.05 deg ~5km) around AOI
-        buf = 0.05
+        # Add buffer (0.1 deg ~11km) to match backscatter's 10km buffer
+        buf = 0.1
         west_b, south_b, east_b, north_b = west - buf, south - buf, east + buf, north + buf
 
         # Find pixel window corresponding to AOI bbox
