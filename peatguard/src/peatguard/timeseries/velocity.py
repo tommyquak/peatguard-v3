@@ -150,12 +150,42 @@ def export_velocity(
     except (KeyError, Exception):
         logger.info("Velocity uncertainty not available")
 
-    # Read and apply coherence mask
+    # Read coherence for masking
     temporal_coh_path = mintpy_dir / "temporalCoherence.h5"
     nodata = -9999.0
+    coherence = None
 
     if temporal_coh_path.exists():
         coherence, _ = _read_mintpy_h5(temporal_coh_path, "temporalCoherence")
+
+    # Clip all arrays to AOI bbox (avoids huge full-swath outputs)
+    row_start = row_end = col_start = col_end = 0
+    if config is not None:
+        from rasterio.transform import from_bounds
+        west, south, east, north = config.aoi.bbox
+        # Add buffer (0.05 deg ~5km) around AOI
+        buf = 0.05
+        west_b, south_b, east_b, north_b = west - buf, south - buf, east + buf, north + buf
+
+        # Find pixel window corresponding to AOI bbox
+        col_start = max(0, int((west_b - transform.c) / transform.a))
+        col_end = min(w, int((east_b - transform.c) / transform.a) + 1)
+        row_start = max(0, int((north_b - transform.f) / transform.e))
+        row_end = min(h, int((south_b - transform.f) / transform.e) + 1)
+
+        if col_end > col_start and row_end > row_start:
+            logger.info("Clipping to AOI: rows [%d:%d], cols [%d:%d] (from %dx%d)",
+                        row_start, row_end, col_start, col_end, h, w)
+            velocity_mm_yr = velocity_mm_yr[row_start:row_end, col_start:col_end]
+            h, w = velocity_mm_yr.shape
+            transform = from_bounds(west_b, south_b, east_b, north_b, w, h)
+            if velocity_std is not None:
+                velocity_std = velocity_std[row_start:row_end, col_start:col_end]
+            if coherence is not None:
+                coherence = coherence[row_start:row_end, col_start:col_end]
+
+    # Apply coherence mask
+    if coherence is not None:
         mask = coherence < coherence_mask_threshold
         velocity_mm_yr[mask] = nodata
         if velocity_std is not None:
@@ -167,7 +197,8 @@ def export_velocity(
             mask.size,
         )
 
-        # Export coherence
+    # Export coherence
+    if coherence is not None:
         export_config = config.export if config else None
         coh_path = write_cog(
             data=coherence.astype(np.float32),
