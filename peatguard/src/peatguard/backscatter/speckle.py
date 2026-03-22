@@ -110,13 +110,13 @@ def apply_speckle_filter(
 
     filtered = lee_sigma_filter(data, window_size=window_size, sigma_factor=sigma_factor)
 
+    # Write filtered output, preserving GCPs for geocoding downstream.
+    # GCPs must be written during the initial file creation -- reopening
+    # in r+ mode after write can silently drop them.
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with rasterio.open(output_path, "w", **profile) as dst:
         dst.write(filtered, 1)
-
-    # Preserve GCPs for geocoding downstream
-    if gcps and len(gcps[0]) > 0:
-        with rasterio.open(output_path, "r+") as dst:
+        if gcps and len(gcps[0]) > 0:
             dst.gcps = gcps
 
     logger.info("Filtered output: %s", output_path.name)

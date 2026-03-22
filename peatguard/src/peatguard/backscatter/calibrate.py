@@ -230,6 +230,7 @@ def calibrate_grd(
     with rasterio.open(meas_tiff) as src:
         dn = src.read(1).astype(np.float64)
         profile = src.profile.copy()
+        gcps = src.gcps
 
     height, width = dn.shape
 
@@ -241,7 +242,9 @@ def calibrate_grd(
     cal_lut = np.where(cal_lut == 0, 1.0, cal_lut)
     sigma0 = (dn ** 2) / (cal_lut ** 2)
 
-    # Write calibrated output
+    # Write calibrated output, preserving GCPs for geocoding downstream.
+    # GCPs must be written during the initial file creation -- reopening
+    # in r+ mode after write can silently drop them.
     output_path.parent.mkdir(parents=True, exist_ok=True)
     profile.update(
         dtype="float32",
@@ -252,13 +255,8 @@ def calibrate_grd(
     with rasterio.open(output_path, "w", **profile) as dst:
         dst.write(sigma0.astype(np.float32), 1)
         dst.set_band_description(1, f"sigma0_{polarization}")
-
-    # Preserve GCPs from the source TIFF for geocoding downstream
-    with rasterio.open(meas_tiff) as src:
-        gcps = src.gcps
         if gcps and len(gcps[0]) > 0:
-            with rasterio.open(output_path, "r+") as dst:
-                dst.gcps = gcps
+            dst.gcps = gcps
             logger.info("Preserved %d GCPs for geocoding", len(gcps[0]))
 
     logger.info("Calibrated output: %s", output_path.name)

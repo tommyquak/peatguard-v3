@@ -60,43 +60,103 @@ def terrain_correct(
 
     dst_crs = CRS.from_epsg(target_crs) if isinstance(target_crs, int) else CRS.from_user_input(target_crs)
 
+    # For GCP-based data (Sentinel-1 GRD), use GDAL Warp via a VRT
+    # that embeds the GCPs. This handles the polynomial transform correctly,
+    # unlike rasterio.warp.reproject which expects affine src_transform.
     with rasterio.open(input_path) as src:
-        # Sentinel-1 GRD TIFFs use GCPs for geolocation instead of an
-        # affine transform. Detect this and use GCP-aware reprojection.
         src_crs = src.crs
-        src_transform = src.transform
         gcps = src.gcps
         has_gcps = gcps and len(gcps[0]) > 0
 
-        if has_gcps:
-            gcp_list, gcp_crs = gcps
-            src_crs = gcp_crs or CRS.from_epsg(4326)
-            logger.info("Source has %d GCPs, using GCP-aware reprojection", len(gcp_list))
+    if has_gcps:
+        _terrain_correct_gcps(input_path, output_path, dst_crs, resolution_m, resampling, bounds)
+    else:
+        _terrain_correct_affine(input_path, output_path, dst_crs, resolution_m, resampling, bounds)
 
-            # Derive geographic bounds from GCPs
-            gcp_lons = [g.x for g in gcp_list]
-            gcp_lats = [g.y for g in gcp_list]
-            gcp_bounds = (min(gcp_lons), min(gcp_lats), max(gcp_lons), max(gcp_lats))
+    logger.info("Geocoded output: %s", output_path.name)
+    return output_path
 
-            dst_transform, dst_width, dst_height = calculate_default_transform(
-                src_crs, dst_crs, src.width, src.height,
-                *gcp_bounds, resolution=resolution_m,
-            )
 
-            # Build an intermediate VRT with GCPs applied as a polynomial transform
-            from rasterio.transform import from_gcps
-            src_transform = from_gcps(gcp_list)
+def _terrain_correct_gcps(
+    input_path: Path,
+    output_path: Path,
+    dst_crs: CRS,
+    resolution_m: float,
+    resampling: Resampling,
+    bounds: Optional[tuple[float, float, float, float]] = None,
+) -> None:
+    """Reproject GCP-based imagery using GDAL Warp (handles polynomial transforms).
 
-        elif bounds is not None:
+    Args:
+        bounds: Optional (west, south, east, north) in target CRS to clip output.
+                Without bounds, produces full-swath output which can be very large.
+    """
+    from osgeo import gdal
+
+    gdal.UseExceptions()
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    epsg = dst_crs.to_epsg()
+    srs_str = f"EPSG:{epsg}" if epsg else dst_crs.to_wkt()
+
+    warp_kwargs = dict(
+        dstSRS=srs_str,
+        xRes=resolution_m,
+        yRes=resolution_m,
+        resampleAlg="bilinear",
+        format="GTiff",
+        tps=True,  # Thin Plate Spline from GCPs
+        errorThreshold=0.125,
+    )
+
+    # Clip to bounds if provided (prevents OOM from full-swath geocoding)
+    if bounds:
+        # bounds is (west, south, east, north) in geographic coords.
+        # Convert to target CRS if needed.
+        from pyproj import Transformer
+        transformer = Transformer.from_crs("EPSG:4326", srs_str, always_xy=True)
+        x_min, y_min = transformer.transform(bounds[0], bounds[1])
+        x_max, y_max = transformer.transform(bounds[2], bounds[3])
+        # Add 10km buffer for edge effects
+        buffer = 10000  # meters
+        warp_kwargs["outputBounds"] = (x_min - buffer, y_min - buffer,
+                                        x_max + buffer, y_max + buffer)
+        logger.info("Clipping to bounds: [%.0f, %.0f, %.0f, %.0f] (with 10km buffer)",
+                     x_min - buffer, y_min - buffer, x_max + buffer, y_max + buffer)
+
+    warp_options = gdal.WarpOptions(**warp_kwargs)
+
+    ds = gdal.Warp(str(output_path), str(input_path), options=warp_options)
+    if ds is None:
+        raise RuntimeError(f"GDAL Warp failed for {input_path}")
+    width = ds.RasterXSize
+    height = ds.RasterYSize
+    ds = None  # close
+
+    logger.info("GCP warp complete: %dx%d", width, height)
+
+
+def _terrain_correct_affine(
+    input_path: Path,
+    output_path: Path,
+    dst_crs: CRS,
+    resolution_m: float,
+    resampling: Resampling,
+    bounds: Optional[tuple[float, float, float, float]],
+) -> None:
+    """Reproject affine-transform imagery using rasterio.warp."""
+    with rasterio.open(input_path) as src:
+        src_crs = src.crs
+        if src.transform.is_identity or (src.transform.a == 1 and src.transform.e == -1):
+            logger.warning("Source has no geolocation (identity transform).")
+
+        if bounds is not None:
             dst_transform, dst_width, dst_height = calculate_default_transform(
                 src_crs, dst_crs, src.width, src.height,
                 *bounds, resolution=resolution_m,
             )
         else:
-            # Check if the source has a valid (non-identity) transform
-            if src.transform.is_identity or (src.transform.a == 1 and src.transform.e == -1):
-                logger.warning("Source has no geolocation (identity transform). "
-                               "Output will not be properly georeferenced.")
             dst_transform, dst_width, dst_height = calculate_default_transform(
                 src_crs, dst_crs, src.width, src.height,
                 *src.bounds, resolution=resolution_m,
@@ -110,7 +170,6 @@ def terrain_correct(
             height=dst_height,
             driver="GTiff",
         )
-        # Remove GCPs from output profile (we're using affine transform now)
         profile.pop("gcps", None)
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -120,15 +179,14 @@ def terrain_correct(
                 reproject(
                     source=rasterio.band(src, band_idx),
                     destination=rasterio.band(dst, band_idx),
-                    src_transform=src_transform,
+                    src_transform=src.transform,
                     src_crs=src_crs,
                     dst_transform=dst_transform,
                     dst_crs=dst_crs,
                     resampling=resampling,
                 )
 
-    logger.info("Geocoded output: %s (%dx%d)", output_path.name, dst_width, dst_height)
-    return output_path
+    logger.info("Affine reproject complete: %dx%d", dst_width, dst_height)
 
 
 def to_decibels(

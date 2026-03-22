@@ -702,7 +702,9 @@ def run_backscatter_stage(
         try:
             calibrate_grd(grd_path, cal_path, polarization=config.sentinel1.polarization.lower())
             apply_speckle_filter(cal_path, filt_path, window_size=config.processing.speckle_window_size)
-            terrain_correct(filt_path, geo_path, target_crs=config.aoi.epsg, resolution_m=config.processing.resolution_m)
+            terrain_correct(filt_path, geo_path, target_crs=config.aoi.epsg,
+                           resolution_m=config.processing.resolution_m,
+                           bounds=tuple(config.aoi.bbox))
             geocoded_paths.append(geo_path)
         except Exception as exc:
             logger.error("Failed to process GRD %s: %s", grd_path.name, exc)
