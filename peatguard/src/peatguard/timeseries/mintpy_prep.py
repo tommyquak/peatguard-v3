@@ -56,8 +56,8 @@ _MINTPY_TEMPLATE = textwrap.dedent("""\
     mintpy.network.coherenceBased  = {coh_based}
     mintpy.network.minCoherence    = {min_coh}
 
-    ########## unwrapping error correction
-    mintpy.unwrapError.method      = bridging
+    ########## unwrapping error correction (skip -- MCF unwrapper handles this)
+    mintpy.unwrapError.method      = no
 
     ########## tropospheric delay correction (skip for now -- ERA5 needs auth)
     mintpy.troposphericDelay.method     = no

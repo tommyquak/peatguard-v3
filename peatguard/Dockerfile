@@ -22,14 +22,14 @@ RUN mamba install -y -c conda-forge \
     gdal \
     && mamba clean -afy
 
-# Install SNAPHU from source
-RUN wget -q https://web.stanford.edu/group/radar/softwareandlinks/sw/snaphu/snaphu-v2.0.6.tar.gz \
-    && tar xzf snaphu-v2.0.6.tar.gz \
-    && cd snaphu-v2.0.6/src \
-    && make \
-    && cp ../bin/snaphu /usr/local/bin/ \
-    && cd / \
-    && rm -rf snaphu-v2.0.6*
+# Install SNAPHU from ISCE2 bundled source
+RUN SNAPHU_DIR=$(find /opt/conda -name "snaphu" -path "*/contrib/*" -type d 2>/dev/null | head -1) \
+    && if [ -n "$SNAPHU_DIR" ] && [ -d "$SNAPHU_DIR/src" ]; then \
+         cd "$SNAPHU_DIR/src" && make && cp ../bin/snaphu /usr/local/bin/; \
+       else \
+         echo "SNAPHU not found in ISCE2 contrib, installing via pip" \
+         && pip install --no-cache-dir snaphu; \
+       fi
 
 # Python-only dependencies (not in conda-forge or need specific versions)
 RUN pip install --no-cache-dir \
