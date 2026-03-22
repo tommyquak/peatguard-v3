@@ -105,8 +105,12 @@ def search_scenes(
     else:
         results = _search_sentinel1(config, start_date, end_date, processing_level, max_results)
 
-    logger.info("Found %d total %s scenes", len(results), sensor_name)
-    return sorted(results, key=lambda r: r.properties["startTime"])
+    # Filter out scenes with missing startTime (some NISAR products lack metadata)
+    valid = [r for r in results if r.properties.get("startTime") is not None]
+    if len(valid) < len(results):
+        logger.warning("Filtered %d scenes with missing startTime", len(results) - len(valid))
+    logger.info("Found %d valid %s scenes", len(valid), sensor_name)
+    return sorted(valid, key=lambda r: r.properties["startTime"])
 
 
 def select_best_orbit(results: list[asf.ASFProduct]) -> int:
