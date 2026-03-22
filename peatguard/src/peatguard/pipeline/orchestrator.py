@@ -788,41 +788,68 @@ def run_analysis_stage(
         products["canal_mask"] = canal_mask_path
         products["canal_distance"] = canal_dist_path
 
-        # Reproject canal distance to match velocity grid (CRS may differ:
-        # backscatter is typically UTM, velocity is WGS84 from radar coords)
+        # Reproject velocity to match backscatter/canal grid (UTM).
+        # This ensures all products share the same CRS, extent, and pixel grid.
         import rasterio
         from rasterio.warp import reproject, Resampling
         vel_ds = rasterio.open(velocity_path)
         dist_ds = rasterio.open(canal_dist_path)
+
         if vel_ds.crs != dist_ds.crs or vel_ds.shape != dist_ds.shape:
-            logger.info("Reprojecting canal distance from %s to %s", dist_ds.crs, vel_ds.crs)
-            aligned_dist_path = output_dir / "canal_distance_aligned.tif"
+            logger.info("Reprojecting velocity from %s to %s (%dx%d)",
+                        vel_ds.crs, dist_ds.crs, dist_ds.width, dist_ds.height)
+            aligned_vel_path = output_dir / "subsidence_velocity_utm.tif"
+            aligned_class_path = output_dir / "subsidence_class_utm.tif"
+
+            # Reproject velocity to backscatter grid
             with rasterio.open(
-                aligned_dist_path, "w", driver="GTiff",
-                height=vel_ds.height, width=vel_ds.width,
+                aligned_vel_path, "w", driver="GTiff",
+                height=dist_ds.height, width=dist_ds.width,
                 count=1, dtype="float32",
-                crs=vel_ds.crs, transform=vel_ds.transform,
+                crs=dist_ds.crs, transform=dist_ds.transform,
                 nodata=-9999.0,
             ) as dst:
                 reproject(
-                    source=rasterio.band(dist_ds, 1),
+                    source=rasterio.band(vel_ds, 1),
                     destination=rasterio.band(dst, 1),
-                    src_transform=dist_ds.transform,
-                    src_crs=dist_ds.crs,
-                    dst_transform=vel_ds.transform,
-                    dst_crs=vel_ds.crs,
+                    src_transform=vel_ds.transform,
+                    src_crs=vel_ds.crs,
+                    dst_transform=dist_ds.transform,
+                    dst_crs=dist_ds.crs,
                     resampling=Resampling.bilinear,
                 )
-            dist_ds.close()
-            vel_ds.close()
-            canal_dist_for_risk = aligned_dist_path
+
+            # Also reproject classification to same grid
+            class_ds = rasterio.open(class_path)
+            with rasterio.open(
+                aligned_class_path, "w", driver="GTiff",
+                height=dist_ds.height, width=dist_ds.width,
+                count=1, dtype="uint8",
+                crs=dist_ds.crs, transform=dist_ds.transform,
+                nodata=0,
+            ) as dst:
+                reproject(
+                    source=rasterio.band(class_ds, 1),
+                    destination=rasterio.band(dst, 1),
+                    src_transform=class_ds.transform,
+                    src_crs=class_ds.crs,
+                    dst_transform=dist_ds.transform,
+                    dst_crs=dist_ds.crs,
+                    resampling=Resampling.nearest,
+                )
+            class_ds.close()
+            products["subsidence_class"] = aligned_class_path
+
+            vel_for_risk = aligned_vel_path
+            products["subsidence_velocity_utm"] = aligned_vel_path
         else:
-            dist_ds.close()
-            vel_ds.close()
-            canal_dist_for_risk = canal_dist_path
+            vel_for_risk = velocity_path
+
+        dist_ds.close()
+        vel_ds.close()
 
         risk_path = output_dir / "canal_risk.tif"
-        generate_risk_map(velocity_path, canal_dist_for_risk, risk_path)
+        generate_risk_map(vel_for_risk, canal_dist_path, risk_path)
         products["canal_risk"] = risk_path
     else:
         logger.info("VV backscatter not available, skipping canal detection and risk scoring")

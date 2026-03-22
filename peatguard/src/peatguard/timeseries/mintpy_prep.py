@@ -49,8 +49,11 @@ _MINTPY_TEMPLATE = textwrap.dedent("""\
     ########## subset (disabled -- data already covers AOI)
     ## mintpy.subset.lalo         = {south}:{north},{west}:{east}
 
-    ########## reference point (auto-select from highest coherence area)
+    ########## reference point
+    ## Auto-select from highest coherence unmasked pixel. MintPy caches
+    ## the choice in smallbaselineApp.cfg for subsequent steps.
     mintpy.reference.yx        = auto
+    mintpy.reference.minCoherence = 0.7
 
     ########## network modification
     mintpy.network.coherenceBased  = {coh_based}
