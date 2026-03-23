@@ -1040,7 +1040,9 @@ def run_analysis_stage(
     Returns:
         Dict mapping product names to output paths.
     """
+    import numpy as np
     from peatguard.analysis.subsidence_class import classify_subsidence_file
+    from peatguard.export.cog import read_raster, write_cog
 
     logger.info("=== Stage 5: Analysis ===")
 
@@ -1084,6 +1086,37 @@ def run_analysis_stage(
         water_mask_path=water_mask_path,
     )
     products["subsidence_class"] = class_path
+
+    # Degraded peatland layer: binary mask where subsidence exceeds -10 mm/yr.
+    # Simpler than the multi-class risk score -- shows WHERE degradation is occurring.
+    degraded_path = output_dir / "degraded_peatland.tif"
+    vel_data, vel_meta = read_raster(velocity_path)
+    velocity = vel_data[0]
+    vel_nodata = vel_meta["nodata"] if vel_meta["nodata"] is not None else -9999.0
+    valid = (velocity != vel_nodata) & np.isfinite(velocity)
+    degraded = (valid & (velocity < -10.0)).astype(np.uint8)
+    # Exclude water pixels
+    if water_mask_path and water_mask_path.exists():
+        wm_data, _ = read_raster(water_mask_path)
+        water = wm_data[0].astype(bool)
+        if water.shape == degraded.shape:
+            degraded[water] = 0
+    write_cog(
+        data=degraded,
+        output_path=degraded_path,
+        crs=vel_meta["crs"],
+        transform=vel_meta["transform"],
+        nodata=255,
+        band_names=["degraded_peatland"],
+        dtype="uint8",
+    )
+    products["degraded_peatland"] = degraded_path
+    n_degraded = degraded.sum()
+    n_valid = valid.sum()
+    logger.info(
+        "Degraded peatland: %d/%d pixels (%.1f%%) with velocity < -10 mm/yr",
+        n_degraded, n_valid, n_degraded / max(1, n_valid) * 100,
+    )
 
     # Risk scoring and CRS alignment (requires VV backscatter products)
     if vv_path and vv_path.exists():
