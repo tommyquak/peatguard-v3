@@ -1087,8 +1087,31 @@ def run_analysis_stage(
     )
     products["subsidence_class"] = class_path
 
+    # Peat extent mapping: download peat polygons, rasterize, classify depth,
+    # and create peat-masked subsidence product.
+    peat_binary_path = None
+    if config.peat_mask.enabled:
+        try:
+            from peatguard.analysis.peat_mask import generate_peat_products
+
+            peat_products = generate_peat_products(
+                bbox=config.aoi.bbox,
+                reference_raster_path=velocity_path,
+                velocity_path=velocity_path,
+                output_dir=output_dir,
+                shallow_edge_m=config.peat_mask.shallow_edge_m,
+                moderate_edge_m=config.peat_mask.moderate_edge_m,
+            )
+            products.update(peat_products)
+            peat_binary_path = peat_products.get("peat_extent_binary")
+            logger.info("Peat mapping complete: %d products", len(peat_products))
+        except Exception as exc:
+            logger.warning("Peat mapping failed (non-fatal): %s", exc)
+    else:
+        logger.info("Peat mask disabled in config, skipping")
+
     # Degraded peatland layer: binary mask where subsidence exceeds -10 mm/yr.
-    # Simpler than the multi-class risk score -- shows WHERE degradation is occurring.
+    # Now restricted to peat areas only -- shows WHERE peat degradation is occurring.
     degraded_path = output_dir / "degraded_peatland.tif"
     vel_data, vel_meta = read_raster(velocity_path)
     velocity = vel_data[0]
@@ -1101,6 +1124,24 @@ def run_analysis_stage(
         water = wm_data[0].astype(bool)
         if water.shape == degraded.shape:
             degraded[water] = 0
+    # Restrict to peat areas only: degradation outside peatland is not the target
+    if peat_binary_path and peat_binary_path.exists():
+        peat_data, peat_meta = read_raster(peat_binary_path)
+        peat = peat_data[0]
+        if peat.shape == degraded.shape:
+            n_before = degraded.sum()
+            degraded[peat == 0] = 0
+            n_after = degraded.sum()
+            logger.info(
+                "Peat mask applied to degraded layer: %d -> %d pixels "
+                "(removed %d non-peat degradation pixels)",
+                n_before, n_after, n_before - n_after,
+            )
+        else:
+            logger.warning(
+                "Peat mask shape %s != degraded shape %s, skipping peat restriction",
+                peat.shape, degraded.shape,
+            )
     write_cog(
         data=degraded,
         output_path=degraded_path,
@@ -1114,7 +1155,7 @@ def run_analysis_stage(
     n_degraded = degraded.sum()
     n_valid = valid.sum()
     logger.info(
-        "Degraded peatland: %d/%d pixels (%.1f%%) with velocity < -10 mm/yr",
+        "Degraded peatland: %d/%d pixels (%.1f%%) with velocity < -10 mm/yr on peat",
         n_degraded, n_valid, n_degraded / max(1, n_valid) * 100,
     )
 
@@ -1194,6 +1235,60 @@ def run_analysis_stage(
             water_mask_path=water_mask_path,
         )
         products["canal_risk"] = risk_path
+
+        # Apply peat depth weighting to risk score: deeper peat = higher priority.
+        # Produces a peat-focused risk map where non-peat areas are excluded.
+        peat_depth_path = products.get("peat_extent")
+        if peat_depth_path and peat_depth_path.exists():
+            try:
+                from peatguard.analysis.peat_mask import compute_peat_risk_weight
+
+                risk_data, risk_meta = read_raster(risk_path)
+                risk_arr = risk_data[0]
+                peat_weights = compute_peat_risk_weight(peat_depth_path)
+
+                # Handle shape mismatch
+                if peat_weights.shape != risk_arr.shape:
+                    from rasterio.warp import Resampling, reproject
+                    peat_d, peat_m = read_raster(peat_depth_path)
+                    pw_reproj = np.zeros(risk_arr.shape, dtype=np.float32)
+                    reproject(
+                        source=peat_weights,
+                        destination=pw_reproj,
+                        src_transform=peat_m["transform"],
+                        src_crs=peat_m["crs"],
+                        dst_transform=risk_meta["transform"],
+                        dst_crs=risk_meta["crs"],
+                        resampling=Resampling.nearest,
+                    )
+                    peat_weights = pw_reproj
+
+                peat_risk = risk_arr * peat_weights
+                peat_risk[risk_arr == -9999.0] = -9999.0
+                peat_risk[peat_weights == 0.0] = -9999.0
+
+                peat_risk_path = output_dir / "peat_risk.tif"
+                write_cog(
+                    data=peat_risk,
+                    output_path=peat_risk_path,
+                    crs=risk_meta["crs"],
+                    transform=risk_meta["transform"],
+                    nodata=-9999.0,
+                    band_names=["peat_weighted_risk"],
+                    dtype="float32",
+                )
+                products["peat_risk"] = peat_risk_path
+
+                valid_peat_risk = peat_risk[peat_risk != -9999.0]
+                if valid_peat_risk.size > 0:
+                    logger.info(
+                        "Peat-weighted risk: min=%.3f, max=%.3f, mean=%.3f",
+                        valid_peat_risk.min(),
+                        valid_peat_risk.max(),
+                        valid_peat_risk.mean(),
+                    )
+            except Exception as exc:
+                logger.warning("Peat risk weighting failed (non-fatal): %s", exc)
     else:
         logger.info("VV backscatter not available, skipping canal detection and risk scoring")
 

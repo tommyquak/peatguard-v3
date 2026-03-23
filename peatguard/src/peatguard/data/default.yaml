@@ -61,6 +61,14 @@ water_mask:
   closing_radius: 3            # morphological closing radius (fills small gaps)
   exclude_canals: true         # remove canal pixels from water mask
 
+peat_mask:
+  # Peat extent mapping from WRI/GFW Indonesia Peatlands dataset.
+  # Downloads peat polygons, rasterizes to pipeline grid, estimates depth
+  # from distance-to-edge (dome model, Page et al. 2006).
+  enabled: true
+  shallow_edge_m: 500.0      # < 500m from peat edge = shallow (< 2m est.)
+  moderate_edge_m: 1500.0    # 500-1500m = moderate (2-4m est.); > 1500m = deep (> 4m est.)
+
 risk_score:
   # Calibrated to Hooijer et al. (2012) water table-subsidence relationship
   # and Dupuit equation approximation for canal drainage influence

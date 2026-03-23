@@ -131,6 +131,36 @@ class WaterMaskConfig(BaseModel):
     )
 
 
+class PeatMaskConfig(BaseModel):
+    """Peat extent mapping and masking parameters.
+
+    Downloads peat polygons from the WRI/GFW Indonesia Peatlands dataset
+    and rasterizes them to produce peat-masked subsidence products.
+    Peat depth is estimated from distance-to-edge using the tropical
+    peatland dome model (Page et al., 2006).
+    """
+
+    enabled: bool = Field(
+        default=True,
+        description="Enable peat extent mapping and masking.",
+    )
+    shallow_edge_m: float = Field(
+        default=500.0,
+        description=(
+            "Distance from peat edge for shallow peat classification (meters). "
+            "Pixels within this distance of the peat boundary are classified shallow."
+        ),
+    )
+    moderate_edge_m: float = Field(
+        default=1500.0,
+        description=(
+            "Distance from peat edge for moderate peat classification (meters). "
+            "Pixels between shallow_edge_m and this distance are moderate; "
+            "beyond this distance are classified as deep peat."
+        ),
+    )
+
+
 class RiskScoreConfig(BaseModel):
     """Risk score parameters calibrated to Hooijer et al. (2012).
 
@@ -279,6 +309,7 @@ class PeatGuardConfig(BaseModel):
     processing: ProcessingConfig = Field(default_factory=ProcessingConfig)
     classification: ClassificationConfig = Field(default_factory=ClassificationConfig)
     water_mask: WaterMaskConfig = Field(default_factory=WaterMaskConfig)
+    peat_mask: PeatMaskConfig = Field(default_factory=PeatMaskConfig)
     risk_score: RiskScoreConfig = Field(default_factory=RiskScoreConfig)
     fusion: FusionConfig = Field(default_factory=FusionConfig)
     export: ExportConfig = Field(default_factory=ExportConfig)
