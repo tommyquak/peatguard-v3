@@ -122,7 +122,7 @@ storage:
   gcs_prefix: peatguard-data
 
 mintpy:
-  reference_lalo: [-2.461000, 114.187229]  # High-coherence road feature (coh=0.9998)
+  reference_lalo: []  # Auto-select highest-coherence pixel within data extent
   reference_min_coherence: 0.7
   tropospheric_correction: pyaps  # ERA5 via PyAPS (requires CDS API key)
   unwrap_error_correction: bridging+phase_closure
