@@ -125,7 +125,7 @@ mintpy:
   reference_lalo: []  # Auto-select highest-coherence pixel within data extent
   reference_min_coherence: 0.7
   tropospheric_correction: pyaps  # ERA5 via PyAPS (requires CDS API key)
-  unwrap_error_correction: bridging+phase_closure
+  unwrap_error_correction: no  # bridging fails with fragmented conncomps; MCF handles most errors
   network_modification:
     coherence_based: true
     min_coherence: 0.3
