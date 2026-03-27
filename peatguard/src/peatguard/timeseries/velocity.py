@@ -207,29 +207,19 @@ def export_velocity(
     h, w = velocity_m_yr.shape
     transform, crs = _get_transform(attrs, mintpy_dir=mintpy_dir, config=config, height=h, width=w)
 
-    # Convert LOS velocity to vertical velocity.
+    # Convert LOS velocity to vertical velocity using a constant incidence angle.
     # MintPy outputs Line-of-Sight displacement; for subsidence monitoring we
     # need the vertical component: vertical = LOS / cos(incidence_angle).
-    # Without this correction, subsidence is underestimated by ~27% at 38 deg.
-    incidence_angle = _load_incidence_angle(mintpy_dir, h, w, config)
-    if incidence_angle is not None:
-        cos_inc = np.cos(np.radians(incidence_angle))
-        mean_inc = float(np.nanmean(incidence_angle))
-        mean_factor = float(1.0 / np.cos(np.radians(mean_inc)))
-        logger.info(
-            "Converting LOS to vertical velocity (mean incidence: %.1f deg, factor: %.2f)",
-            mean_inc, mean_factor,
-        )
-        velocity_m_yr /= cos_inc
-        del cos_inc, incidence_angle
-    else:
-        fallback_deg = config.processing.incidence_deg if config else 37.0
-        factor = 1.0 / np.cos(np.radians(fallback_deg))
-        logger.warning(
-            "Incidence angle data not available; using constant %.1f deg (factor: %.2f)",
-            fallback_deg, factor,
-        )
-        velocity_m_yr *= factor
+    # Using a constant factor (from config) rather than per-pixel incidence to
+    # avoid amplification artifacts from geocoded geometry edge pixels where
+    # incidence angle values can be zero or near-90 degrees.
+    fallback_deg = config.processing.incidence_deg if config else 37.0
+    factor = 1.0 / np.cos(np.radians(fallback_deg))
+    logger.info(
+        "Converting LOS to vertical velocity (constant incidence: %.1f deg, factor: %.2f)",
+        fallback_deg, factor,
+    )
+    velocity_m_yr *= factor
 
     # Convert m/yr to mm/yr and clamp extreme outliers
     velocity_mm_yr = velocity_m_yr * 1000.0
