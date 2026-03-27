@@ -1374,6 +1374,31 @@ def run_analysis_stage(
     else:
         logger.info("Peat mask disabled in config, skipping")
 
+    # Forest change analysis: download Hansen GFC data for temporal context.
+    # Clearing year directly relates to subsidence rate (Hooijer et al. 2012).
+    clearing_risk_factor_path = None
+    if config.forest_change.enabled:
+        try:
+            from peatguard.analysis.forest_change import (
+                generate_forest_change_products,
+                validate_subsidence_vs_clearing,
+            )
+
+            fc_products = generate_forest_change_products(
+                bbox=config.aoi.bbox,
+                reference_raster_path=velocity_path,
+                output_dir=output_dir,
+                reference_year=config.forest_change.reference_year,
+                hansen_version=config.forest_change.hansen_version,
+            )
+            products.update(fc_products)
+            clearing_risk_factor_path = fc_products.get("clearing_risk_factor")
+            logger.info("Forest change analysis complete: %d products", len(fc_products))
+        except Exception as exc:
+            logger.warning("Forest change analysis failed (non-fatal): %s", exc)
+    else:
+        logger.info("Forest change analysis disabled in config, skipping")
+
     # Degraded peatland layer: binary mask where subsidence exceeds -10 mm/yr.
     # Now restricted to peat areas only -- shows WHERE peat degradation is occurring.
     degraded_path = output_dir / "degraded_peatland.tif"
@@ -1553,6 +1578,60 @@ def run_analysis_stage(
                     )
             except Exception as exc:
                 logger.warning("Peat risk weighting failed (non-fatal): %s", exc)
+
+        # Time-adjusted risk: multiply canal risk by clearing risk factor.
+        # Areas cleared recently get a higher multiplier (Hooijer et al. 2012).
+        if clearing_risk_factor_path and clearing_risk_factor_path.exists():
+            try:
+                risk_data, risk_meta = read_raster(risk_path)
+                risk_arr = risk_data[0]
+                crf_data, crf_meta = read_raster(clearing_risk_factor_path)
+                crf_arr = crf_data[0]
+
+                # Handle shape mismatch
+                if crf_arr.shape != risk_arr.shape:
+                    from rasterio.warp import Resampling, reproject
+                    crf_reproj = np.zeros(risk_arr.shape, dtype=np.float32)
+                    reproject(
+                        source=crf_arr,
+                        destination=crf_reproj,
+                        src_transform=crf_meta["transform"],
+                        src_crs=crf_meta["crs"],
+                        dst_transform=risk_meta["transform"],
+                        dst_crs=risk_meta["crs"],
+                        resampling=Resampling.nearest,
+                    )
+                    crf_arr = crf_reproj
+
+                time_adjusted = risk_arr * crf_arr
+                time_adjusted[risk_arr == -9999.0] = -9999.0
+                time_adjusted[crf_arr == -9999.0] = -9999.0
+                # Clip to [0, 1] range after multiplication
+                valid_ta = (time_adjusted != -9999.0)
+                time_adjusted[valid_ta] = np.clip(time_adjusted[valid_ta], 0.0, 1.0)
+
+                ta_risk_path = output_dir / "time_adjusted_risk.tif"
+                write_cog(
+                    data=time_adjusted,
+                    output_path=ta_risk_path,
+                    crs=risk_meta["crs"],
+                    transform=risk_meta["transform"],
+                    nodata=-9999.0,
+                    band_names=["time_adjusted_risk"],
+                    dtype="float32",
+                )
+                products["time_adjusted_risk"] = ta_risk_path
+
+                valid_mask = time_adjusted != -9999.0
+                if valid_mask.any():
+                    logger.info(
+                        "Time-adjusted risk: min=%.3f, max=%.3f, mean=%.3f",
+                        time_adjusted[valid_mask].min(),
+                        time_adjusted[valid_mask].max(),
+                        time_adjusted[valid_mask].mean(),
+                    )
+            except Exception as exc:
+                logger.warning("Time-adjusted risk failed (non-fatal): %s", exc)
     else:
         logger.info("VV backscatter not available, skipping canal detection and risk scoring")
 
@@ -1624,16 +1703,18 @@ def run_analysis_stage(
             # Locate coherence product (produced by timeseries stage)
             coherence_path = output_dir / "coherence_median.tif"
 
-            # Determine NDVI download parameters
-            ndvi_bbox = config.aoi.bbox if config.validation.attempt_ndvi_download else None
-
+            # bbox is used for both NDVI download and OSM canal validation.
+            # Always pass it so OSM validation can run even if NDVI download
+            # is disabled (run_validation gates NDVI via attempt_ndvi_download).
             validation_report = run_validation(
                 velocity_path=val_velocity,
                 output_dir=output_dir,
                 vv_path=vv_path,
                 coherence_path=coherence_path if coherence_path.exists() else None,
                 canal_distance_path=products.get("canal_distance"),
-                bbox=ndvi_bbox,
+                canal_mask_path=products.get("canal_mask"),
+                bbox=config.aoi.bbox,
+                attempt_ndvi_download=config.validation.attempt_ndvi_download,
             )
 
             # Track validation outputs for GCS upload
@@ -1644,6 +1725,12 @@ def run_analysis_stage(
             ndvi_composite = validation_dir / "validation_ndvi_composite.tif"
             if ndvi_composite.exists():
                 products["validation_ndvi_composite"] = ndvi_composite
+            osm_waterways = validation_dir / "osm_waterways.tif"
+            if osm_waterways.exists():
+                products["osm_waterways"] = osm_waterways
+            osm_metrics = validation_dir / "validation_osm.json"
+            if osm_metrics.exists():
+                products["validation_osm"] = osm_metrics
 
             n_correlations = len(validation_report.get("correlations", {}))
             logger.info("Cross-validation complete: %d correlations computed", n_correlations)
@@ -1652,6 +1739,29 @@ def run_analysis_stage(
             logger.warning("Cross-validation failed (non-fatal): %s", exc)
     else:
         logger.info("Cross-validation disabled in config, skipping")
+
+    # Forest change validation: compare subsidence rates across clearing cohorts
+    if config.forest_change.enabled and clearing_risk_factor_path is not None:
+        try:
+            from peatguard.analysis.forest_change import validate_subsidence_vs_clearing
+
+            deforestation_year_path = products.get("deforestation_year")
+            if deforestation_year_path and deforestation_year_path.exists():
+                val_velocity = products.get("subsidence_velocity_utm", velocity_path)
+                fc_validation = validate_subsidence_vs_clearing(
+                    velocity_path=val_velocity,
+                    lossyear_path=deforestation_year_path,
+                    output_dir=output_dir,
+                )
+                fc_report_path = output_dir / "validation_clearing.json"
+                if fc_report_path.exists():
+                    products["validation_clearing"] = fc_report_path
+                logger.info(
+                    "Forest change validation: %s",
+                    fc_validation.get("assessment", "unknown"),
+                )
+        except Exception as exc:
+            logger.warning("Forest change validation failed (non-fatal): %s", exc)
 
     # Generate pipeline quality report for stakeholder communication and audits
     try:

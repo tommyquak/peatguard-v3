@@ -666,6 +666,212 @@ def download_sentinel2_composite(
 
 
 # ---------------------------------------------------------------------------
+# OSM waterway validation of SAR canal detection
+# ---------------------------------------------------------------------------
+
+def osm_canal_validation(
+    canal_mask_path: Path,
+    output_dir: Path,
+    bbox: list[float],
+    buffer_pixels: int = 2,
+) -> Optional[dict]:
+    """Validate SAR-based canal detection against OpenStreetMap waterways.
+
+    Downloads waterway features (canals, drains, ditches) from the Overpass
+    API, rasterizes them to match the SAR canal_mask grid, and computes
+    precision/recall metrics by comparing the two binary masks.
+
+    Args:
+        canal_mask_path: Path to the SAR-derived canal mask GeoTIFF (uint8, 1=canal).
+        output_dir: Directory for output files (osm_waterways.tif, validation_osm.json).
+        bbox: AOI bounding box as [west, south, east, north].
+        buffer_pixels: Dilation radius applied to OSM lines before comparison,
+            to account for positional uncertainty between OSM and SAR grids.
+
+    Returns:
+        Dict with precision, recall, and pixel counts, or None if the
+        Overpass API is unavailable.
+    """
+    import requests
+
+    try:
+        import rasterio
+        from rasterio.features import rasterize
+        from shapely.geometry import LineString
+    except ImportError as exc:
+        logger.warning("OSM validation requires rasterio and shapely: %s", exc)
+        return None
+
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # --- 1. Read the SAR canal mask to get the target grid ----------------
+    sar_data, sar_meta = read_raster(canal_mask_path)
+    sar_mask = sar_data[0].astype(bool)
+    transform = sar_meta["transform"]
+    crs = sar_meta["crs"]
+    height, width = sar_mask.shape
+
+    logger.info(
+        "SAR canal mask: %d x %d, %d canal pixels",
+        width, height, int(sar_mask.sum()),
+    )
+
+    # --- 2. Download waterways from Overpass API --------------------------
+    # Overpass bbox format: south,west,north,east
+    west, south, east, north = bbox
+    overpass_bbox = f"{south},{west},{north},{east}"
+
+    query = (
+        f"[out:json][timeout:60];\n"
+        f"(\n"
+        f'  way["waterway"]["waterway"!="river"]({overpass_bbox});\n'
+        f'  way["waterway"="canal"]({overpass_bbox});\n'
+        f'  way["waterway"="drain"]({overpass_bbox});\n'
+        f'  way["waterway"="ditch"]({overpass_bbox});\n'
+        f");\n"
+        f"out geom;"
+    )
+
+    overpass_url = "https://overpass-api.de/api/interpreter"
+    logger.info("Querying Overpass API for waterways in bbox %s", bbox)
+
+    try:
+        response = requests.post(
+            overpass_url,
+            data={"data": query},
+            timeout=60,
+        )
+        response.raise_for_status()
+    except requests.RequestException as exc:
+        logger.warning(
+            "Overpass API request failed, skipping OSM validation: %s", exc
+        )
+        return None
+
+    data = response.json()
+    elements = data.get("elements", [])
+    logger.info("Overpass returned %d waterway elements", len(elements))
+
+    if not elements:
+        logger.info("No OSM waterways found in AOI, skipping OSM validation")
+        return {
+            "status": "no_osm_waterways",
+            "n_osm_elements": 0,
+        }
+
+    # --- 3. Parse geometries into Shapely LineStrings ---------------------
+    geometries = []
+    for elem in elements:
+        if elem.get("type") != "way":
+            continue
+        geom_nodes = elem.get("geometry", [])
+        if len(geom_nodes) < 2:
+            continue
+        coords = [(node["lon"], node["lat"]) for node in geom_nodes]
+        geometries.append(LineString(coords))
+
+    logger.info("Parsed %d waterway linestrings from OSM", len(geometries))
+
+    if not geometries:
+        logger.info("No valid waterway geometries parsed, skipping OSM validation")
+        return {
+            "status": "no_valid_geometries",
+            "n_osm_elements": len(elements),
+        }
+
+    # --- 4. Rasterize OSM waterways to match SAR grid ---------------------
+    shapes = [(geom, 1) for geom in geometries]
+    osm_raster = rasterize(
+        shapes,
+        out_shape=(height, width),
+        transform=transform,
+        fill=0,
+        dtype=np.uint8,
+        all_touched=True,
+    )
+    osm_mask = osm_raster.astype(bool)
+
+    # Apply buffer to OSM lines to account for positional uncertainty
+    if buffer_pixels > 0:
+        from scipy.ndimage import binary_dilation, generate_binary_structure
+
+        struct = generate_binary_structure(2, 2)  # 8-connectivity
+        for _ in range(buffer_pixels):
+            osm_mask = binary_dilation(osm_mask, structure=struct)
+
+    osm_pixels = int(osm_mask.sum())
+    logger.info(
+        "OSM waterways rasterized: %d pixels (after %d-pixel buffer)",
+        osm_pixels, buffer_pixels,
+    )
+
+    # --- 5. Compare SAR detection vs OSM reference ------------------------
+    sar_pixels = int(sar_mask.sum())
+    osm_in_sar = int((osm_mask & sar_mask).sum())
+    osm_not_in_sar = int((osm_mask & ~sar_mask).sum())
+    sar_not_in_osm = int((sar_mask & ~osm_mask).sum())
+
+    recall = osm_in_sar / osm_pixels if osm_pixels > 0 else float("nan")
+    precision = osm_in_sar / sar_pixels if sar_pixels > 0 else float("nan")
+    f1 = (
+        2.0 * precision * recall / (precision + recall)
+        if (precision + recall) > 0
+        else float("nan")
+    )
+
+    logger.info(
+        "OSM canal validation: recall=%.3f (%d/%d OSM pixels detected), "
+        "precision=%.3f (%d/%d SAR pixels in OSM), F1=%.3f",
+        recall, osm_in_sar, osm_pixels,
+        precision, osm_in_sar, sar_pixels,
+        f1,
+    )
+    logger.info(
+        "SAR detections not in OSM: %d pixels (potential unmapped canals or false positives)",
+        sar_not_in_osm,
+    )
+
+    # --- 6. Write OSM waterways raster ------------------------------------
+    osm_output_path = output_dir / "osm_waterways.tif"
+    write_cog(
+        data=osm_mask.astype(np.uint8),
+        output_path=osm_output_path,
+        crs=crs,
+        transform=transform,
+        nodata=255,
+        band_names=["osm_waterways"],
+        dtype="uint8",
+    )
+    logger.info("OSM waterways raster written: %s", osm_output_path)
+
+    # --- 7. Write validation metrics JSON ---------------------------------
+    metrics = {
+        "status": "complete",
+        "n_osm_elements": len(elements),
+        "n_osm_geometries": len(geometries),
+        "osm_pixels": osm_pixels,
+        "sar_pixels": sar_pixels,
+        "osm_in_sar": osm_in_sar,
+        "osm_not_in_sar": osm_not_in_sar,
+        "sar_not_in_osm": sar_not_in_osm,
+        "recall": float(recall),
+        "precision": float(precision),
+        "f1_score": float(f1),
+        "buffer_pixels": buffer_pixels,
+        "bbox": bbox,
+        "osm_waterways_path": str(osm_output_path),
+    }
+
+    metrics_path = output_dir / "validation_osm.json"
+    with open(metrics_path, "w") as f:
+        json.dump(metrics, f, indent=2)
+    logger.info("OSM validation metrics written: %s", metrics_path)
+
+    return metrics
+
+
+# ---------------------------------------------------------------------------
 # Main validation runner
 # ---------------------------------------------------------------------------
 
@@ -675,8 +881,10 @@ def run_validation(
     vv_path: Optional[Path] = None,
     coherence_path: Optional[Path] = None,
     canal_distance_path: Optional[Path] = None,
+    canal_mask_path: Optional[Path] = None,
     ndvi_path: Optional[Path] = None,
     bbox: Optional[list[float]] = None,
+    attempt_ndvi_download: bool = False,
     ndvi_start_date: Optional[str] = None,
     ndvi_end_date: Optional[str] = None,
 ) -> dict:
@@ -691,8 +899,12 @@ def run_validation(
         vv_path: Path to VV backscatter composite (optional).
         coherence_path: Path to temporal coherence raster (optional).
         canal_distance_path: Path to canal distance raster (optional).
+        canal_mask_path: Path to SAR canal mask GeoTIFF for OSM validation (optional).
         ndvi_path: Path to pre-existing NDVI composite (optional).
-        bbox: AOI bounding box for Sentinel-2 download attempt.
+        bbox: AOI bounding box [west, south, east, north] for OSM download
+            and optionally Sentinel-2 NDVI download.
+        attempt_ndvi_download: Whether to attempt Sentinel-2 NDVI download
+            from Planetary Computer when ndvi_path is not provided.
         ndvi_start_date: Start date for Sentinel-2 search (YYYY-MM-DD).
         ndvi_end_date: End date for Sentinel-2 search (YYYY-MM-DD).
 
@@ -756,7 +968,7 @@ def run_validation(
 
     # 4. Sentinel-2 NDVI
     # Try to download if not provided and bbox is available
-    if ndvi_path is None and bbox is not None:
+    if ndvi_path is None and attempt_ndvi_download and bbox is not None:
         ndvi_start = ndvi_start_date or "2024-01-01"
         ndvi_end = ndvi_end_date or "2024-12-31"
         logger.info("Attempting Sentinel-2 NDVI download for cross-validation")
@@ -781,6 +993,26 @@ def run_validation(
             }
     else:
         logger.info("NDVI composite not available, skipping NDVI validation")
+
+    # 5. OSM waterway validation of SAR canal detection
+    if canal_mask_path and canal_mask_path.exists() and bbox is not None:
+        try:
+            osm_result = osm_canal_validation(
+                canal_mask_path=canal_mask_path,
+                output_dir=validation_dir,
+                bbox=bbox,
+            )
+            if osm_result is not None:
+                report["osm_canal_validation"] = osm_result
+        except Exception as exc:
+            logger.warning("OSM canal validation failed (non-fatal): %s", exc)
+            report["osm_canal_validation"] = {
+                "status": "error", "error": str(exc),
+            }
+    else:
+        logger.info(
+            "Canal mask or bbox not available, skipping OSM canal validation"
+        )
 
     # Write report
     report_path = validation_dir / "validation_report.json"

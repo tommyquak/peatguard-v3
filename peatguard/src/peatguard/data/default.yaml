@@ -79,6 +79,15 @@ risk_score:
   max_influence_m: 1200.0      # canal influence radius (Hooijer: 1-1.5 km)
   severe_velocity_mm_yr: -40.0 # velocity at max risk (Hooijer: 20-50 mm/yr)
 
+forest_change:
+  # Hansen Global Forest Change (Hansen et al. 2013): provides WHEN each
+  # area was cleared, which directly relates to peat subsidence rate via
+  # Hooijer et al. (2012) time-since-drainage relationship.
+  # Data: 30m resolution, free, no authentication required.
+  enabled: true
+  reference_year: 2024               # match InSAR observation period
+  hansen_version: "GFC-2023-v1.11"   # latest version as of 2024
+
 fusion:
   # Multi-sensor fusion: combine C-band (Sentinel-1) and L-band (NISAR)
   # velocity maps using coherence-weighted averaging. Only runs when both

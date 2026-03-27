@@ -234,6 +234,32 @@ class FusionConfig(BaseModel):
     )
 
 
+class ForestChangeConfig(BaseModel):
+    """Hansen Global Forest Change data integration parameters.
+
+    Downloads Hansen et al. (2013) "lossyear" and "treecover2000" tiles
+    to provide temporal context for subsidence analysis. The clearing year
+    directly relates to subsidence rate via Hooijer et al. (2012): recently
+    cleared peatland subsides faster than areas cleared decades ago.
+    """
+
+    enabled: bool = Field(
+        default=True,
+        description="Enable Hansen Global Forest Change data download and analysis.",
+    )
+    reference_year: int = Field(
+        default=2024,
+        description=(
+            "Reference year for computing time-since-clearing. "
+            "Should match the InSAR observation period."
+        ),
+    )
+    hansen_version: str = Field(
+        default="GFC-2023-v1.11",
+        description="Hansen GFC dataset version string for download URL construction.",
+    )
+
+
 class ValidationConfig(BaseModel):
     """Cross-validation settings for independent verification of InSAR velocity.
 
@@ -354,6 +380,7 @@ class PeatGuardConfig(BaseModel):
     water_mask: WaterMaskConfig = Field(default_factory=WaterMaskConfig)
     peat_mask: PeatMaskConfig = Field(default_factory=PeatMaskConfig)
     risk_score: RiskScoreConfig = Field(default_factory=RiskScoreConfig)
+    forest_change: ForestChangeConfig = Field(default_factory=ForestChangeConfig)
     fusion: FusionConfig = Field(default_factory=FusionConfig)
     validation: ValidationConfig = Field(default_factory=ValidationConfig)
     export: ExportConfig = Field(default_factory=ExportConfig)
