@@ -2,15 +2,24 @@
 
 Identifies drainage canals and ditches in peatlands using VV
 backscatter. Canals appear as dark linear features because water
-surfaces produce specular reflection (low backscatter). The
-detection pipeline uses thresholding, morphological operations,
-and connected component analysis to extract canal networks.
+surfaces produce specular reflection (low backscatter).
+
+Two complementary detection methods are combined:
+1. Threshold: catches wide water-filled canals (absolute dark pixels).
+2. Ridge (Sato filter): catches narrow 2-5m plantation drainage ditches
+   that create local backscatter valleys but may not pass the absolute
+   threshold. Multi-scale ridge detection finds dark linear features
+   regardless of the surrounding brightness.
+
+The union of both masks is cleaned with morphological operations and
+a linearity filter (aspect ratio > 3) to remove non-linear blobs.
 
 Future: U-Net semantic segmentation model for improved detection.
 """
 
 from __future__ import annotations
 
+import gc
 import logging
 from pathlib import Path
 from typing import Optional
@@ -58,6 +67,89 @@ def threshold_canals(
         canal_mask.sum(),
     )
     return canal_mask
+
+
+def ridge_detect_canals(
+    vv_data: np.ndarray,
+    sigmas: range = range(1, 4),
+    nodata: float = -9999.0,
+    ridge_percentile: float = 85.0,
+) -> np.ndarray:
+    """Detect narrow canals using multi-scale ridge (Sato) filtering.
+
+    The Sato tubeness filter highlights dark linear structures (ridges
+    in the inverted image) that may be too faint to pass an absolute
+    backscatter threshold. This catches narrow 2-5m plantation drainage
+    ditches at 10m pixel resolution.
+
+    At 10m resolution, sigma=1 targets ~10m features, sigma=3 targets
+    ~30-40m features. This range covers typical plantation ditch widths.
+
+    Memory note: Sato creates ~2 internal arrays per sigma. With 3 sigmas
+    on a 4000x4000 float32 image this is ~384MB peak, acceptable for
+    Cloud Run 32GB.
+
+    Args:
+        vv_data: 2D array of VV backscatter (linear scale).
+        sigmas: Range of sigma values for multi-scale detection.
+        nodata: NoData value to exclude.
+        ridge_percentile: Percentile of non-zero ridgeness values to use
+            as threshold. Higher = stricter (fewer detections).
+
+    Returns:
+        Binary mask where True = ridge-detected canal pixel.
+    """
+    from skimage.filters import sato
+
+    valid = (vv_data != nodata) & np.isfinite(vv_data) & (vv_data > 0)
+
+    if not np.any(valid):
+        logger.warning("No valid pixels for ridge canal detection")
+        return np.zeros_like(vv_data, dtype=bool)
+
+    # Prepare input: fill nodata with median so filter edges behave well
+    vv_filled = vv_data.copy().astype(np.float32)
+    median_val = np.median(vv_filled[valid])
+    vv_filled[~valid] = median_val
+
+    # Sato filter with black_ridges=True detects dark linear features
+    ridgeness = sato(
+        vv_filled,
+        sigmas=sigmas,
+        black_ridges=True,
+        mode="reflect",
+    )
+
+    # Free the filled copy immediately
+    del vv_filled
+    gc.collect()
+
+    # Threshold at the Nth percentile of non-zero ridgeness values
+    nonzero_ridgeness = ridgeness[ridgeness > 0]
+    if len(nonzero_ridgeness) == 0:
+        logger.warning("Sato filter produced no non-zero ridgeness values")
+        del ridgeness
+        gc.collect()
+        return np.zeros_like(vv_data, dtype=bool)
+
+    ridge_threshold = np.percentile(nonzero_ridgeness, ridge_percentile)
+    ridge_mask = (ridgeness >= ridge_threshold) & valid
+
+    ridge_pixels = int(ridge_mask.sum())
+    logger.info(
+        "Ridge detection: sigmas=%s, threshold=%.6f (%.0fth pctl), "
+        "%d pixels detected",
+        list(sigmas),
+        ridge_threshold,
+        ridge_percentile,
+        ridge_pixels,
+    )
+
+    # Free ridgeness array to reclaim memory
+    del ridgeness, nonzero_ridgeness
+    gc.collect()
+
+    return ridge_mask
 
 
 def morphological_cleanup(
@@ -232,9 +324,41 @@ def detect_canals(
     # Get pixel resolution from transform
     pixel_res = abs(metadata["transform"][0])
 
-    # Detect and clean
-    raw_mask = threshold_canals(vv, percentile=percentile)
-    clean_mask = morphological_cleanup(raw_mask, min_length_pixels=min_length_pixels)
+    # --- Method 1: Threshold (catches wide water-filled canals) ---
+    threshold_mask = threshold_canals(vv, percentile=percentile)
+
+    # --- Method 2: Ridge detection (catches narrow drainage ditches) ---
+    ridge_mask = ridge_detect_canals(
+        vv,
+        sigmas=range(1, 4),
+        nodata=-9999.0,
+    )
+
+    # --- Union both masks ---
+    combined_mask = threshold_mask | ridge_mask
+
+    # Log contribution of each method
+    threshold_only = int((threshold_mask & ~ridge_mask).sum())
+    ridge_only = int((ridge_mask & ~threshold_mask).sum())
+    both = int((threshold_mask & ridge_mask).sum())
+    logger.info(
+        "Canal detection union: %d threshold-only, %d ridge-only, "
+        "%d overlap, %d combined pixels",
+        threshold_only,
+        ridge_only,
+        both,
+        int(combined_mask.sum()),
+    )
+
+    # Free individual masks before cleanup
+    del threshold_mask, ridge_mask
+    gc.collect()
+
+    # Morphological cleanup on combined mask
+    clean_mask = morphological_cleanup(combined_mask, min_length_pixels=min_length_pixels)
+    del combined_mask
+    gc.collect()
+
     distance_m = compute_canal_distance(clean_mask, pixel_resolution_m=pixel_res)
 
     # Optionally save outputs

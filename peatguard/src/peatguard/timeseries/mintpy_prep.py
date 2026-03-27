@@ -114,8 +114,8 @@ _MINTPY_TEMPLATE = textwrap.dedent("""\
     mintpy.network.coherenceBased  = {coh_based}
     mintpy.network.minCoherence    = {min_coh}
 
-    ########## unwrapping error correction (skip -- MCF unwrapper handles this)
-    mintpy.unwrapError.method      = no
+    ########## unwrapping error correction
+    mintpy.unwrapError.method      = {unwrap_error_method}
 
     ########## tropospheric delay correction
     mintpy.troposphericDelay.method          = {tropo_method}
@@ -453,6 +453,10 @@ def generate_mintpy_config(
             config.mintpy.reference_min_coherence,
         )
 
+    # Unwrap error correction method from config
+    unwrap_error_method = config.mintpy.unwrap_error_correction
+    logger.info("Unwrap error correction method: %s", unwrap_error_method)
+
     # Determine tropospheric correction method.
     # Use PyAPS (ERA5) when the config requests it AND CDS API credentials are available.
     # Fall back to no correction otherwise to avoid a hard failure.
@@ -484,6 +488,7 @@ def generate_mintpy_config(
         coh_based=coh_based,
         min_coh=min_coh,
         reference_point_block=reference_point_block,
+        unwrap_error_method=unwrap_error_method,
         tropo_method=tropo_method,
         weather_dir=str(weather_dir),
     )

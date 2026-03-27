@@ -1,8 +1,9 @@
 """Velocity map extraction and export from MintPy outputs.
 
-Reads MintPy's velocity.h5 HDF5 output and converts it to
-Cloud-Optimized GeoTIFF for ArcGIS Pro consumption. Also
-extracts velocity uncertainty for quality assessment.
+Reads MintPy's velocity.h5 HDF5 output, converts Line-of-Sight (LOS)
+velocity to vertical velocity using the incidence angle, and exports
+as Cloud-Optimized GeoTIFF for ArcGIS Pro consumption. Also extracts
+velocity uncertainty for quality assessment.
 """
 
 from __future__ import annotations
@@ -114,6 +115,66 @@ def _get_transform(
     return from_origin(0, 0, 1, 1), 4326
 
 
+def _load_incidence_angle(
+    mintpy_dir: Path,
+    height: int,
+    width: int,
+    config: Optional["PeatGuardConfig"] = None,
+) -> Optional[np.ndarray]:
+    """Load incidence angle array from MintPy geometry HDF5.
+
+    Checks geometryGeo.h5 first (geocoded), then geometryRadar.h5
+    (radar coordinates). The dataset name is "incidenceAngle" and
+    values are in degrees.
+
+    Args:
+        mintpy_dir: MintPy working directory.
+        height: Expected array height (rows).
+        width: Expected array width (columns).
+        config: Pipeline configuration (unused, reserved).
+
+    Returns:
+        2-D float32 array of incidence angles in degrees, or None if
+        no geometry file is found.
+    """
+    import h5py
+
+    inputs_dir = mintpy_dir / "inputs"
+    # Prefer geocoded geometry (produced when mintpy.geocode = yes)
+    candidates = [
+        inputs_dir / "geometryGeo.h5",
+        inputs_dir / "geometryRadar.h5",
+    ]
+
+    for geom_path in candidates:
+        if not geom_path.exists():
+            continue
+        try:
+            with h5py.File(str(geom_path), "r") as gf:
+                if "incidenceAngle" not in gf:
+                    logger.debug("No incidenceAngle dataset in %s", geom_path.name)
+                    continue
+                inc = gf["incidenceAngle"][:].astype(np.float32)
+            # Validate shape matches velocity grid
+            if inc.shape == (height, width):
+                logger.info(
+                    "Loaded incidence angle from %s (%dx%d)",
+                    geom_path.name, height, width,
+                )
+                return inc
+            else:
+                logger.warning(
+                    "Incidence angle shape %s does not match velocity shape (%d, %d) "
+                    "in %s; skipping",
+                    inc.shape, height, width, geom_path.name,
+                )
+                del inc
+        except Exception as exc:
+            logger.warning("Failed to read incidence angle from %s: %s", geom_path.name, exc)
+
+    return None
+
+
 def export_velocity(
     mintpy_dir: Path,
     output_dir: Path,
@@ -145,6 +206,30 @@ def export_velocity(
     velocity_m_yr, attrs = _read_mintpy_h5(velocity_path, "velocity")
     h, w = velocity_m_yr.shape
     transform, crs = _get_transform(attrs, mintpy_dir=mintpy_dir, config=config, height=h, width=w)
+
+    # Convert LOS velocity to vertical velocity.
+    # MintPy outputs Line-of-Sight displacement; for subsidence monitoring we
+    # need the vertical component: vertical = LOS / cos(incidence_angle).
+    # Without this correction, subsidence is underestimated by ~27% at 38 deg.
+    incidence_angle = _load_incidence_angle(mintpy_dir, h, w, config)
+    if incidence_angle is not None:
+        cos_inc = np.cos(np.radians(incidence_angle))
+        mean_inc = float(np.nanmean(incidence_angle))
+        mean_factor = float(1.0 / np.cos(np.radians(mean_inc)))
+        logger.info(
+            "Converting LOS to vertical velocity (mean incidence: %.1f deg, factor: %.2f)",
+            mean_inc, mean_factor,
+        )
+        velocity_m_yr /= cos_inc
+        del cos_inc, incidence_angle
+    else:
+        fallback_deg = config.processing.incidence_deg if config else 37.0
+        factor = 1.0 / np.cos(np.radians(fallback_deg))
+        logger.warning(
+            "Incidence angle data not available; using constant %.1f deg (factor: %.2f)",
+            fallback_deg, factor,
+        )
+        velocity_m_yr *= factor
 
     # Convert m/yr to mm/yr and clamp extreme outliers
     velocity_mm_yr = velocity_m_yr * 1000.0
@@ -229,7 +314,7 @@ def export_velocity(
         crs=crs,
         transform=transform,
         nodata=nodata,
-        band_names=["velocity_mm_yr"],
+        band_names=["vertical_velocity_mm_yr"],
         export_config=export_config,
         dtype="float32",
     )
@@ -243,7 +328,7 @@ def export_velocity(
             crs=crs,
             transform=transform,
             nodata=nodata,
-            band_names=["velocity_std_mm_yr"],
+            band_names=["vertical_velocity_std_mm_yr"],
             export_config=export_config,
             dtype="float32",
         )

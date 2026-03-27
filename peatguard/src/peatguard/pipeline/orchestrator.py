@@ -1045,6 +1045,245 @@ def _run_fusion(
     return fusion_products
 
 
+def generate_quality_report(
+    products: dict[str, Path],
+    config: PeatGuardConfig,
+    output_dir: Path,
+) -> Path:
+    """Generate a JSON quality report summarizing pipeline output metrics.
+
+    Reads each raster product one at a time, computes summary statistics,
+    then releases the array before loading the next product. This keeps
+    memory usage flat on Cloud Run.
+
+    The report is designed for stakeholder communication and Verra
+    carbon-credit audit trails.
+
+    Args:
+        products: Dict mapping product names to output file paths.
+        config: Pipeline configuration.
+        output_dir: Directory to write pipeline_report.json.
+
+    Returns:
+        Path to the written pipeline_report.json.
+    """
+    import json
+    from datetime import datetime, timezone
+
+    import numpy as np
+    from peatguard.export.cog import read_raster
+
+    report: dict = {
+        "pipeline_version": "v32",
+        "sensor": config.sensor,
+        "aoi_bbox": config.aoi.bbox,
+        "target_epsg": config.aoi.epsg,
+        "processing_timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
+    # -- Pipeline metadata --
+    report["pipeline_metadata"] = {
+        "reference_point_lalo": config.mintpy.reference_lalo,
+        "tropospheric_correction": config.mintpy.tropospheric_correction,
+        "coherence_threshold": config.processing.coherence_threshold,
+        "fusion_enabled": config.fusion.enabled,
+        "water_mask_enabled": config.water_mask.enabled,
+        "peat_mask_enabled": config.peat_mask.enabled,
+        "risk_weights": {
+            "proximity": config.risk_score.proximity_weight,
+            "subsidence": config.risk_score.subsidence_weight,
+        },
+        "max_influence_m": config.risk_score.max_influence_m,
+        "severe_velocity_mm_yr": config.risk_score.severe_velocity_mm_yr,
+    }
+
+    # -- Velocity statistics --
+    vel_path = products.get("subsidence_velocity_utm") or products.get("subsidence_velocity")
+    if vel_path and vel_path.exists():
+        try:
+            vel_data, vel_meta = read_raster(vel_path)
+            velocity = vel_data[0]
+            nodata = vel_meta["nodata"] if vel_meta["nodata"] is not None else -9999.0
+            valid = (velocity != nodata) & np.isfinite(velocity)
+            valid_pixels = velocity[valid]
+            report["velocity_stats"] = {
+                "mean_mm_yr": round(float(np.mean(valid_pixels)), 2),
+                "median_mm_yr": round(float(np.median(valid_pixels)), 2),
+                "std_mm_yr": round(float(np.std(valid_pixels)), 2),
+                "min_mm_yr": round(float(np.min(valid_pixels)), 2),
+                "max_mm_yr": round(float(np.max(valid_pixels)), 2),
+                "valid_pixel_count": int(valid_pixels.size),
+                "total_pixels": int(velocity.size),
+            }
+            logger.info(
+                "Quality report: velocity mean=%.2f mm/yr, %d valid pixels",
+                report["velocity_stats"]["mean_mm_yr"],
+                report["velocity_stats"]["valid_pixel_count"],
+            )
+            del vel_data, velocity, valid_pixels, valid
+        except Exception as exc:
+            logger.warning("Quality report: failed to read velocity product: %s", exc)
+    else:
+        logger.info("Quality report: velocity product not found, skipping velocity stats")
+
+    # -- Coherence statistics --
+    coh_path = output_dir / "coherence_median.tif"
+    if coh_path.exists():
+        try:
+            coh_data, coh_meta = read_raster(coh_path)
+            coherence = coh_data[0]
+            nodata = coh_meta["nodata"] if coh_meta["nodata"] is not None else -9999.0
+            valid = (coherence != nodata) & np.isfinite(coherence)
+            valid_coh = coherence[valid]
+            n_valid = int(valid_coh.size)
+            report["coherence_stats"] = {
+                "mean": round(float(np.mean(valid_coh)), 4),
+                "median": round(float(np.median(valid_coh)), 4),
+                "pixels_above_0.5": int(np.sum(valid_coh > 0.5)),
+                "fraction_above_0.5": round(float(np.sum(valid_coh > 0.5)) / max(1, n_valid), 4),
+                "pixels_above_0.7": int(np.sum(valid_coh > 0.7)),
+                "fraction_above_0.7": round(float(np.sum(valid_coh > 0.7)) / max(1, n_valid), 4),
+                "valid_pixel_count": n_valid,
+            }
+            logger.info(
+                "Quality report: coherence mean=%.3f, %.1f%% above 0.5",
+                report["coherence_stats"]["mean"],
+                report["coherence_stats"]["fraction_above_0.5"] * 100,
+            )
+            del coh_data, coherence, valid_coh, valid
+        except Exception as exc:
+            logger.warning("Quality report: failed to read coherence product: %s", exc)
+    else:
+        logger.info("Quality report: coherence product not found, skipping coherence stats")
+
+    # -- Canal mask statistics --
+    canal_path = products.get("canal_mask")
+    if canal_path and canal_path.exists():
+        try:
+            canal_data, canal_meta = read_raster(canal_path)
+            canal = canal_data[0]
+            total_pixels = int(canal.size)
+            canal_pixels = int(np.sum(canal == 1))
+            report["canal_stats"] = {
+                "total_canal_pixels": canal_pixels,
+                "total_pixels": total_pixels,
+                "canal_coverage_pct": round(canal_pixels / max(1, total_pixels) * 100, 3),
+            }
+            logger.info(
+                "Quality report: %d canal pixels (%.2f%% coverage)",
+                canal_pixels,
+                report["canal_stats"]["canal_coverage_pct"],
+            )
+            del canal_data, canal
+        except Exception as exc:
+            logger.warning("Quality report: failed to read canal mask: %s", exc)
+    else:
+        logger.info("Quality report: canal mask not found, skipping canal stats")
+
+    # -- Classification distribution --
+    class_path = products.get("subsidence_class")
+    if class_path and class_path.exists():
+        try:
+            from peatguard.analysis.subsidence_class import CLASS_LABELS
+
+            class_data, _ = read_raster(class_path)
+            classified = class_data[0]
+            distribution = {}
+            for code, label in CLASS_LABELS.items():
+                count = int(np.sum(classified == code))
+                if count > 0:
+                    distribution[label] = count
+            report["classification_distribution"] = distribution
+            logger.info(
+                "Quality report: classification has %d classes with data",
+                len(distribution),
+            )
+            del class_data, classified
+        except Exception as exc:
+            logger.warning("Quality report: failed to read classification: %s", exc)
+    else:
+        logger.info("Quality report: classification product not found, skipping")
+
+    # -- Risk score distribution --
+    risk_path = products.get("canal_risk")
+    if risk_path and risk_path.exists():
+        try:
+            risk_data, risk_meta = read_raster(risk_path)
+            risk = risk_data[0]
+            nodata = risk_meta["nodata"] if risk_meta["nodata"] is not None else -9999.0
+            valid = (risk != nodata) & np.isfinite(risk)
+            valid_risk = risk[valid]
+            n_valid = int(valid_risk.size)
+            if n_valid > 0:
+                # Risk categories: 0-0.2 low, 0.2-0.4 moderate, 0.4-0.6 elevated,
+                # 0.6-0.8 high, 0.8-1.0 critical
+                low = int(np.sum(valid_risk < 0.2))
+                moderate = int(np.sum((valid_risk >= 0.2) & (valid_risk < 0.4)))
+                elevated = int(np.sum((valid_risk >= 0.4) & (valid_risk < 0.6)))
+                high = int(np.sum((valid_risk >= 0.6) & (valid_risk < 0.8)))
+                critical = int(np.sum(valid_risk >= 0.8))
+                report["risk_distribution"] = {
+                    "mean_risk": round(float(np.mean(valid_risk)), 4),
+                    "low_fraction": round(low / n_valid, 4),
+                    "moderate_fraction": round(moderate / n_valid, 4),
+                    "elevated_fraction": round(elevated / n_valid, 4),
+                    "high_fraction": round(high / n_valid, 4),
+                    "critical_fraction": round(critical / n_valid, 4),
+                    "valid_pixel_count": n_valid,
+                }
+                logger.info(
+                    "Quality report: mean risk=%.3f, %.1f%% critical",
+                    report["risk_distribution"]["mean_risk"],
+                    report["risk_distribution"]["critical_fraction"] * 100,
+                )
+            del risk_data, risk, valid_risk, valid
+        except Exception as exc:
+            logger.warning("Quality report: failed to read risk score: %s", exc)
+    else:
+        logger.info("Quality report: risk score product not found, skipping")
+
+    # -- Error budget (static, based on processing configuration) --
+    atmo_note = "ERA5-corrected (PyAPS)" if config.mintpy.tropospheric_correction == "pyaps" else "uncorrected"
+    report["error_budget"] = {
+        "atmospheric": f"5-15 mm/yr ({atmo_note})",
+        "unwrapping_errors": config.mintpy.unwrap_error_correction,
+        "reference_point": (
+            f"Fixed at {config.mintpy.reference_lalo}"
+            if config.mintpy.reference_lalo
+            else "MintPy auto-selected"
+        ),
+        "coherence_threshold": config.processing.coherence_threshold,
+    }
+
+    # -- Data quality summary --
+    data_quality: dict = {}
+    if "velocity_stats" in report:
+        data_quality["valid_pixel_fraction"] = round(
+            report["velocity_stats"]["valid_pixel_count"]
+            / max(1, report["velocity_stats"]["total_pixels"]),
+            4,
+        )
+    if "coherence_stats" in report:
+        data_quality["mean_coherence"] = report["coherence_stats"]["mean"]
+        data_quality["high_coherence_fraction"] = report["coherence_stats"]["fraction_above_0.7"]
+    if data_quality:
+        report["data_quality"] = data_quality
+
+    # -- Product inventory --
+    report["products"] = {
+        name: str(path.name)
+        for name, path in sorted(products.items())
+        if path.exists()
+    }
+    report["product_count"] = len(report["products"])
+
+    # Write the report
+    report_path = output_dir / "pipeline_report.json"
+    report_path.write_text(json.dumps(report, indent=2, default=str))
+    logger.info("Pipeline quality report written to %s", report_path)
+    return report_path
+
+
 def run_analysis_stage(
     config: PeatGuardConfig,
     velocity_path: Path,
@@ -1363,13 +1602,25 @@ def run_analysis_stage(
     else:
         logger.info("Cross-validation disabled in config, skipping")
 
+    # Generate pipeline quality report for stakeholder communication and audits
+    try:
+        report_path = generate_quality_report(products, config, output_dir)
+        products["pipeline_report"] = report_path
+    except Exception as exc:
+        logger.warning("Quality report generation failed (non-fatal): %s", exc)
+
     # Upload products to GCS
     if config.storage.gcs_bucket:
         from peatguard.export.gcs import upload_file
         for name, path in products.items():
-            blob_name = f"products/{path.name}"
+            if path.suffix == ".json":
+                blob_name = f"products/{path.name}"
+                content_type = "application/json"
+            else:
+                blob_name = f"products/{path.name}"
+                content_type = None
             try:
-                upload_file(path, config.storage.gcs_bucket, blob_name)
+                upload_file(path, config.storage.gcs_bucket, blob_name, content_type=content_type)
                 logger.info("Uploaded %s to gs://%s/%s", name, config.storage.gcs_bucket, blob_name)
             except Exception as exc:
                 logger.warning("Failed to upload %s: %s", name, exc)
