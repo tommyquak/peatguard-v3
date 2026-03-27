@@ -1647,20 +1647,46 @@ def run_analysis_stage(
         vel_nodata = vel_meta_cl["nodata"] if vel_meta_cl["nodata"] is not None else -9999.0
         valid_vel = (vel_arr != vel_nodata) & np.isfinite(vel_arr)
 
+        # Apply coherence filter: exclude low-coherence pixels (river banks,
+        # water edges) that produce extreme velocity artifacts.
+        coherence_path = output_dir / "coherence_median.tif"
+        if not coherence_path.exists():
+            coherence_path = output_dir / "coherence_median_utm.tif"
+        if coherence_path.exists():
+            coh_data, _ = read_raster(coherence_path)
+            coh_arr = coh_data[0]
+            if coh_arr.shape == vel_arr.shape:
+                low_coh = coh_arr < 0.5
+                valid_vel = valid_vel & ~low_coh
+                logger.info(
+                    "Carbon loss: filtered %d low-coherence pixels (<0.5)",
+                    int(low_coh.sum()),
+                )
+                del low_coh
+            del coh_data, coh_arr
+
+        # Smooth velocity with median filter to reduce noise
+        from scipy.ndimage import median_filter
+        vel_smooth = vel_arr.copy()
+        vel_smooth[~valid_vel] = 0.0
+        vel_smooth = median_filter(vel_smooth, size=5).astype(np.float32)
+        vel_smooth[~valid_vel] = vel_nodata
+
         # Carbon loss = |negative velocity| * factor (only subsidence, not uplift)
         carbon_loss = np.full_like(vel_arr, -9999.0, dtype=np.float32)
-        subsiding = valid_vel & (vel_arr < 0)
-        carbon_loss[subsiding] = np.abs(vel_arr[subsiding]) * HOOIJER_CO2_FACTOR
+        subsiding = valid_vel & (vel_smooth < 0)
+        carbon_loss[subsiding] = np.abs(vel_smooth[subsiding]) * HOOIJER_CO2_FACTOR
         carbon_loss[valid_vel & ~subsiding] = 0.0
+        del vel_smooth
 
-        # Mask to peat areas if available
-        peat_binary_path = products.get("peat_extent_binary")
-        if peat_binary_path and peat_binary_path.exists():
-            peat_data, _ = read_raster(peat_binary_path)
-            peat_mask = peat_data[0].astype(bool)
-            if peat_mask.shape == carbon_loss.shape:
-                carbon_loss[~peat_mask] = -9999.0
-            del peat_data, peat_mask
+        # Exclude water pixels
+        water_path = products.get("water_mask")
+        if water_path and water_path.exists():
+            wm_data, _ = read_raster(water_path)
+            wm_arr = wm_data[0].astype(bool)
+            if wm_arr.shape == carbon_loss.shape:
+                carbon_loss[wm_arr] = -9999.0
+            del wm_data, wm_arr
 
         write_cog(
             data=carbon_loss,
