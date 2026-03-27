@@ -88,11 +88,17 @@ class ProcessingConfig(BaseModel):
 
 
 class ClassificationConfig(BaseModel):
-    """Subsidence classification thresholds in mm/yr."""
+    """Subsidence classification thresholds in mm/yr.
+
+    Natural peat accumulation is ~1 mm/yr. Any subsidence below
+    -5 mm/yr on peat indicates net carbon loss, so "stable" is
+    restricted to the +/-5 mm/yr natural variability envelope.
+    """
 
     severe_threshold: float = -50.0
     active_drying_threshold: float = -20.0
-    stable_threshold: float = 0.0
+    moderate_drying_threshold: float = -5.0
+    stable_threshold: float = 5.0
 
 
 class WaterMaskConfig(BaseModel):
@@ -228,6 +234,43 @@ class FusionConfig(BaseModel):
     )
 
 
+class ValidationConfig(BaseModel):
+    """Cross-validation settings for independent verification of InSAR velocity.
+
+    Computes spatial correlations between subsidence velocity and
+    independent datasets (backscatter, coherence, canal distance, NDVI)
+    to provide evidence that the InSAR signal reflects real ground motion.
+    """
+
+    enabled: bool = Field(
+        default=True,
+        description="Enable cross-validation after analysis stage.",
+    )
+    attempt_ndvi_download: bool = Field(
+        default=True,
+        description=(
+            "Attempt to download Sentinel-2 NDVI composite from Planetary Computer. "
+            "Requires pystac-client and planetary-computer packages. If unavailable, "
+            "validation proceeds with SAR-only products."
+        ),
+    )
+    ndvi_max_cloud_cover: int = Field(
+        default=30,
+        description="Maximum cloud cover percentage for Sentinel-2 scene selection.",
+    )
+    ndvi_max_scenes: int = Field(
+        default=20,
+        description="Maximum number of Sentinel-2 scenes for the NDVI composite.",
+    )
+    coherence_threshold: float = Field(
+        default=0.5,
+        description=(
+            "Coherence threshold for zonal analysis. Pixels above this "
+            "are classified as 'cleared'; below as 'forested'."
+        ),
+    )
+
+
 class ExportConfig(BaseModel):
     """Output format settings for ArcGIS Pro compatibility."""
 
@@ -312,6 +355,7 @@ class PeatGuardConfig(BaseModel):
     peat_mask: PeatMaskConfig = Field(default_factory=PeatMaskConfig)
     risk_score: RiskScoreConfig = Field(default_factory=RiskScoreConfig)
     fusion: FusionConfig = Field(default_factory=FusionConfig)
+    validation: ValidationConfig = Field(default_factory=ValidationConfig)
     export: ExportConfig = Field(default_factory=ExportConfig)
     storage: StorageConfig = Field(default_factory=StorageConfig)
     mintpy: MintPyConfig = Field(default_factory=MintPyConfig)

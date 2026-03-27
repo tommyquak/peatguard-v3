@@ -13,7 +13,7 @@ aoi:
 sentinel1:
   platform: SENTINEL-1
   polarization: VV
-  subswath: IW3
+  subswath: IW2
   processing_level_slc: SLC
   processing_level_grd: GRD_HD
   beam_mode: IW
@@ -47,9 +47,11 @@ processing:
 
 classification:
   # Subsidence velocity thresholds (mm/yr)
+  # Natural peat accumulation ~1 mm/yr; below -5 mm/yr = net carbon loss
   severe_threshold: -50.0
   active_drying_threshold: -20.0
-  stable_threshold: 0.0
+  moderate_drying_threshold: -5.0
+  stable_threshold: 5.0
 
 water_mask:
   # Water body detection from VV backscatter to prevent false subsidence
@@ -86,6 +88,15 @@ fusion:
   c_band_weight_boost: 1.0        # multiplicative boost for C-band weight (1.0 = no boost)
   min_coherence: 0.3              # minimum coherence for a sensor to contribute
 
+validation:
+  # Cross-validation: correlate InSAR velocity with independent datasets
+  # to provide evidence that the subsidence signal is real.
+  enabled: true
+  attempt_ndvi_download: true     # try Sentinel-2 NDVI from Planetary Computer
+  ndvi_max_cloud_cover: 30        # max cloud cover for S2 scene selection
+  ndvi_max_scenes: 20             # max scenes for NDVI composite
+  coherence_threshold: 0.5        # cleared vs forested zonal split
+
 export:
   cog_blocksize: 512
   cog_compression: DEFLATE
@@ -102,7 +113,7 @@ storage:
   gcs_prefix: peatguard-data
 
 mintpy:
-  reference_lalo: [-2.496900, 114.312148]  # Stable reference point on non-peat substrate
+  reference_lalo: [-2.461000, 114.187229]  # High-coherence road feature (coh=0.9998)
   reference_min_coherence: 0.7
   tropospheric_correction: pyaps  # ERA5 via PyAPS (requires CDS API key)
   unwrap_error_correction: bridging+phase_closure

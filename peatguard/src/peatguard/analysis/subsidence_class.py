@@ -4,10 +4,17 @@ Classifies velocity maps into severity categories based on
 thresholds from peatland literature. The classification follows
 the interpretation guidelines in the PeatGuard README:
 
-    Class 1 (Severe):       < -50 mm/yr   (heavily drained peat)
-    Class 2 (Active drying): -50 to -20    (ongoing drying)
-    Class 3 (Stable):       -20 to 0       (stable or rewetted)
-    Class 4 (Noise/uplift):  > 0           (measurement noise or rebound)
+    Class 1 (Severe):          < -50 mm/yr   (heavily drained peat)
+    Class 2 (Active drying):   -50 to -20    (ongoing drying)
+    Class 3 (Moderate drying): -20 to -5     (slow but ongoing carbon loss)
+    Class 4 (Stable):          -5 to +5      (natural variability range)
+    Class 5 (Rebound/noise):   > +5          (measurement noise or rebound)
+    Class 6 (Water):           water mask
+
+Natural peat accumulation is ~1 mm/yr. Any subsidence below -5 mm/yr
+on peat indicates net carbon loss (Hooijer et al., 2012), so the
+"stable" class is restricted to the +/-5 mm/yr natural variability
+envelope rather than the previous -20 to 0 range.
 """
 
 from __future__ import annotations
@@ -26,17 +33,19 @@ logger = logging.getLogger(__name__)
 # Class codes and labels
 CLASS_SEVERE = 1
 CLASS_ACTIVE_DRYING = 2
-CLASS_STABLE = 3
-CLASS_NOISE_UPLIFT = 4
-CLASS_WATER = 5
+CLASS_MODERATE_DRYING = 3
+CLASS_STABLE = 4
+CLASS_REBOUND_NOISE = 5
+CLASS_WATER = 6
 CLASS_NODATA = 0
 
 CLASS_LABELS = {
     CLASS_NODATA: "NoData",
     CLASS_SEVERE: "Severe (< -50 mm/yr)",
     CLASS_ACTIVE_DRYING: "Active drying (-50 to -20 mm/yr)",
-    CLASS_STABLE: "Stable (-20 to 0 mm/yr)",
-    CLASS_NOISE_UPLIFT: "Noise/Uplift (> 0 mm/yr)",
+    CLASS_MODERATE_DRYING: "Moderate drying (-20 to -5 mm/yr)",
+    CLASS_STABLE: "Stable (-5 to +5 mm/yr)",
+    CLASS_REBOUND_NOISE: "Rebound/Noise (> +5 mm/yr)",
     CLASS_WATER: "Water body",
 }
 
@@ -54,12 +63,12 @@ def classify_subsidence(
         nodata: NoData value in the input.
         thresholds: Classification thresholds. Uses defaults if None.
         water_mask: Optional boolean 2D array where True = water pixel.
-            Water pixels are assigned CLASS_WATER (5) regardless of
+            Water pixels are assigned CLASS_WATER (6) regardless of
             velocity, preventing false subsidence detections over
             open water bodies.
 
     Returns:
-        2D uint8 array of class codes (0=nodata, 1-5=classes).
+        2D uint8 array of class codes (0=nodata, 1-6=classes).
     """
     if thresholds is None:
         thresholds = ClassificationConfig()
@@ -76,9 +85,14 @@ def classify_subsidence(
     classified[
         valid
         & (velocity_mm_yr >= thresholds.active_drying_threshold)
+        & (velocity_mm_yr < thresholds.moderate_drying_threshold)
+    ] = CLASS_MODERATE_DRYING
+    classified[
+        valid
+        & (velocity_mm_yr >= thresholds.moderate_drying_threshold)
         & (velocity_mm_yr < thresholds.stable_threshold)
     ] = CLASS_STABLE
-    classified[valid & (velocity_mm_yr >= thresholds.stable_threshold)] = CLASS_NOISE_UPLIFT
+    classified[valid & (velocity_mm_yr >= thresholds.stable_threshold)] = CLASS_REBOUND_NOISE
 
     # Apply water mask: override any classification on water pixels
     if water_mask is not None:

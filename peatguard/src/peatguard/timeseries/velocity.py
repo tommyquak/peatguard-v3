@@ -58,15 +58,19 @@ def _get_transform(
     """
     from rasterio.transform import from_bounds, from_origin
 
-    # 1. MintPy geocoded attributes
-    x_first = float(attrs.get("X_FIRST", 0))
-    x_step = float(attrs.get("X_STEP", 1))
-    if x_first != 0 and x_step != 1:
-        y_first = float(attrs.get("Y_FIRST", 0))
-        y_step = float(attrs.get("Y_STEP", -1))
+    # 1. MintPy geocoded attributes (present when mintpy.geocode = yes)
+    if "X_FIRST" in attrs and "X_STEP" in attrs:
+        x_first = float(attrs["X_FIRST"])
+        x_step = float(attrs["X_STEP"])
+        y_first = float(attrs["Y_FIRST"])
+        y_step = float(attrs["Y_STEP"])
         transform = from_origin(x_first, y_first, abs(x_step), abs(y_step))
         crs = int(attrs.get("EPSG", 4326))
-        logger.info("Geotransform from MintPy geocoded attrs")
+        logger.info(
+            "Geotransform from MintPy geocoded attrs: origin=(%.6f, %.6f), "
+            "step=(%.6f, %.6f), EPSG:%d",
+            x_first, y_first, x_step, y_step, crs,
+        )
         return transform, crs
 
     # 2. Lat/lon from geometry HDF5
@@ -88,8 +92,13 @@ def _get_transform(
                         # Sanity check: bbox should be within reasonable bounds
                         if (-90 < south < north < 90) and (-180 < west < east < 180):
                             transform = from_bounds(west, south, east, north, w, h)
-                            logger.info("Geotransform from geometry lat/lon: "
-                                        "[%.4f, %.4f, %.4f, %.4f]", west, south, east, north)
+                            logger.warning(
+                                "Geotransform from geometry lat/lon bounds (affine "
+                                "approximation -- may have 1-3 km error in radar "
+                                "geometry). Consider enabling mintpy.geocode = yes. "
+                                "Bounds: [%.4f, %.4f, %.4f, %.4f]",
+                                west, south, east, north,
+                            )
                             return transform, 4326
 
     # 3. AOI bbox from config

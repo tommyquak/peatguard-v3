@@ -38,7 +38,8 @@ def test_classification_thresholds():
     config = load_config(config_path)
     assert config.classification.severe_threshold == -50.0
     assert config.classification.active_drying_threshold == -20.0
-    assert config.classification.stable_threshold == 0.0
+    assert config.classification.moderate_drying_threshold == -5.0
+    assert config.classification.stable_threshold == 5.0
 
 
 def test_export_settings():

@@ -78,6 +78,7 @@ def morphological_cleanup(
     Returns:
         Cleaned binary canal mask.
     """
+    from skimage.measure import label, regionprops
     from skimage.morphology import (
         binary_closing,
         binary_dilation,
@@ -91,6 +92,28 @@ def morphological_cleanup(
 
     # Remove small isolated detections
     cleaned = remove_small_objects(closed, min_size=min_length_pixels)
+
+    # Linearity filter: keep only elongated components (aspect ratio > 3).
+    # Canals are linear features; dark blobs (e.g. shadows, ponds) are not.
+    min_aspect_ratio = 3.0
+    labeled = label(cleaned)
+    props = regionprops(labeled)
+    removed_count = 0
+    for region in props:
+        if region.minor_axis_length > 0:
+            aspect = region.major_axis_length / region.minor_axis_length
+        else:
+            aspect = float("inf")
+        if aspect < min_aspect_ratio:
+            cleaned[labeled == region.label] = False
+            removed_count += 1
+    logger.info(
+        "Linearity filter: removed %d non-linear components out of %d "
+        "(min aspect ratio %.1f)",
+        removed_count,
+        len(props),
+        min_aspect_ratio,
+    )
 
     # Optional: thin to centerline for vector extraction
     # skeleton = skeletonize(cleaned)

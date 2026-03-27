@@ -756,7 +756,11 @@ def run_timeseries_stage(
     Returns:
         Path to the MintPy working directory.
     """
-    from peatguard.timeseries.mintpy_prep import generate_mintpy_config, prep_data_for_mintpy
+    from peatguard.timeseries.mintpy_prep import (
+        generate_mintpy_config,
+        pre_download_era5,
+        prep_data_for_mintpy,
+    )
     from peatguard.timeseries.sbas import run_sbas_inversion
     from peatguard.timeseries.velocity import export_velocity
 
@@ -781,7 +785,28 @@ def run_timeseries_stage(
 
     # Generate MintPy config and run smallbaselineApp with --start to skip
     # load_data (we already created the HDF5 files directly)
-    config_path = generate_mintpy_config(isce_dir, mintpy_dir, config)
+    weather_dir = mintpy_dir / "weather"
+    weather_dir.mkdir(exist_ok=True)
+    config_path = generate_mintpy_config(isce_dir, mintpy_dir, config, weather_dir=weather_dir)
+
+    # Pre-download ERA5 data one date at a time with retry logic.
+    # This prevents the CDS API timeout that occurs when MintPy/PyAPS
+    # tries to bulk-download all dates in a single request.
+    tropo_setting = config.mintpy.tropospheric_correction.lower()
+    if tropo_setting in ("pyaps", "era5"):
+        ifg_dates = set()
+        for d in (isce_dir / "merged" / "interferograms").iterdir():
+            if d.is_dir():
+                parts = d.name.split("_")
+                if len(parts) == 2 and len(parts[0]) == 8:
+                    ifg_dates.add(parts[0])
+                    ifg_dates.add(parts[1])
+        if ifg_dates:
+            pre_download_era5(
+                dates=sorted(ifg_dates),
+                bbox=config.aoi.bbox,
+                weather_dir=weather_dir,
+            )
 
     from peatguard.timeseries.sbas import run_smallbaselineApp_from_step
     run_smallbaselineApp_from_step(config_path, mintpy_dir, start_step="modify_network")
@@ -1296,6 +1321,47 @@ def run_analysis_stage(
     if config.fusion.enabled:
         fusion_products = _run_fusion(config, output_dir, products)
         products.update(fusion_products)
+
+    # Cross-validation: correlate velocity with independent datasets
+    if config.validation.enabled:
+        try:
+            from peatguard.analysis.validation import run_validation
+
+            # Use the UTM velocity if available (matches backscatter grid),
+            # otherwise fall back to the original velocity path.
+            val_velocity = products.get("subsidence_velocity_utm", velocity_path)
+
+            # Locate coherence product (produced by timeseries stage)
+            coherence_path = output_dir / "coherence_median.tif"
+
+            # Determine NDVI download parameters
+            ndvi_bbox = config.aoi.bbox if config.validation.attempt_ndvi_download else None
+
+            validation_report = run_validation(
+                velocity_path=val_velocity,
+                output_dir=output_dir,
+                vv_path=vv_path,
+                coherence_path=coherence_path if coherence_path.exists() else None,
+                canal_distance_path=products.get("canal_distance"),
+                bbox=ndvi_bbox,
+            )
+
+            # Track validation outputs for GCS upload
+            validation_dir = output_dir / "validation"
+            report_path = validation_dir / "validation_report.json"
+            if report_path.exists():
+                products["validation_report"] = report_path
+            ndvi_composite = validation_dir / "validation_ndvi_composite.tif"
+            if ndvi_composite.exists():
+                products["validation_ndvi_composite"] = ndvi_composite
+
+            n_correlations = len(validation_report.get("correlations", {}))
+            logger.info("Cross-validation complete: %d correlations computed", n_correlations)
+
+        except Exception as exc:
+            logger.warning("Cross-validation failed (non-fatal): %s", exc)
+    else:
+        logger.info("Cross-validation disabled in config, skipping")
 
     # Upload products to GCS
     if config.storage.gcs_bucket:

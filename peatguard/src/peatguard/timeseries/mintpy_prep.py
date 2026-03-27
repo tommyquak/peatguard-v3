@@ -12,9 +12,11 @@ metadata (wavelength, orbit height, pixel sizes).
 from __future__ import annotations
 
 import logging
+import math
 import os
 import subprocess
 import textwrap
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -131,8 +133,9 @@ _MINTPY_TEMPLATE = textwrap.dedent("""\
     mintpy.velocity.startDate          = auto
     mintpy.velocity.endDate            = auto
 
-    ########## geocoding (skip -- export handles this separately)
-    mintpy.geocode                     = no
+    ########## geocoding (enabled for proper radar-to-geographic coordinate mapping)
+    mintpy.geocode                     = yes
+    mintpy.geocode.method              = linear
 """)
 
 
@@ -177,9 +180,223 @@ def _ensure_cdsapirc() -> None:
         )
         return
 
+    # Set a 300-second timeout to prevent CDS API request timeouts.
+    # The default timeout is too short for large ERA5 pressure level requests.
     cdsapirc.write_text(f"url: {api_url}\nkey: {api_key}\n")
     cdsapirc.chmod(0o600)
     logger.info("Created %s from environment variables", cdsapirc)
+
+
+def _compute_era5_snwe(bbox: list[float]) -> tuple[int, int, int, int]:
+    """Compute ERA5 spatial extent from AOI bbox with buffer and rounding.
+
+    Matches MintPy/PyAPS convention: 2-degree buffer, rounded to nearest
+    10-degree multiple. This ensures the pre-downloaded GRIB files cover
+    the same area that MintPy's correct_troposphere step will request.
+
+    Args:
+        bbox: AOI bounding box as [west, south, east, north] in degrees.
+
+    Returns:
+        Tuple of (S, N, W, E) as integers, rounded to 10-degree multiples.
+    """
+    west, south, east, north = bbox
+    # 2-degree buffer (same as MintPy get_snwe)
+    s = math.floor(south - 2)
+    n = math.ceil(north + 2)
+    w = math.floor(west - 2)
+    e = math.ceil(east + 2)
+    # Round to 10-degree multiples (same as MintPy floor2multiple / ceil2multiple)
+    s = int(math.floor(s / 10) * 10)
+    n = int(math.ceil(n / 10) * 10)
+    w = int(math.floor(w / 10) * 10)
+    e = int(math.ceil(e / 10) * 10)
+    return s, n, w, e
+
+
+def _snwe_to_str(snwe: tuple[int, int, int, int]) -> str:
+    """Convert SNWE tuple to PyAPS filename string.
+
+    Matches MintPy's snwe2str convention: negative latitudes use 'S',
+    negative longitudes use 'W'.
+
+    Args:
+        snwe: Tuple of (S, N, W, E) as integers.
+
+    Returns:
+        String like '_S10_N0_E110_E120'.
+    """
+    s, n, w, e = snwe
+    area = ""
+    area += f"_S{abs(s)}" if s < 0 else f"_N{abs(s)}"
+    area += f"_S{abs(n)}" if n < 0 else f"_N{abs(n)}"
+    area += f"_W{abs(w)}" if w < 0 else f"_E{abs(w)}"
+    area += f"_W{abs(e)}" if e < 0 else f"_E{abs(e)}"
+    return area
+
+
+# ERA5 pressure levels used by PyAPS for tropospheric delay calculation.
+# Must match the levels PyAPS expects in its GRIB files.
+_ERA5_PRESSURE_LEVELS = [
+    "1", "2", "3", "5", "7", "10", "20", "30", "50", "70",
+    "100", "125", "150", "175", "200", "225", "250", "300",
+    "350", "400", "450", "500", "550", "600", "650", "700",
+    "750", "775", "800", "825", "850", "875", "900", "925",
+    "950", "975", "1000",
+]
+
+
+def pre_download_era5(
+    dates: list[str],
+    bbox: list[float],
+    weather_dir: Path,
+    hour: str = "22",
+    max_retries: int = 3,
+    retry_backoff_s: float = 30.0,
+) -> list[Path]:
+    """Pre-download ERA5 pressure level data for each SAR acquisition date.
+
+    Downloads ERA5 GRIB files one date at a time via the CDS API, with
+    retry logic and per-date error isolation. This avoids the timeout
+    that occurs when MintPy/PyAPS tries to bulk-download all dates in
+    a single CDS API request.
+
+    Pre-downloaded files are placed in the exact directory and naming
+    convention that PyAPS expects, so MintPy's correct_troposphere step
+    will find them and skip re-downloading.
+
+    Args:
+        dates: SAR acquisition dates as YYYYMMDD strings.
+        bbox: AOI bounding box as [west, south, east, north] in degrees.
+        weather_dir: Base weather directory (ERA5 subdir is created inside).
+        hour: UTC hour for ERA5 model (2-digit string). Sentinel-1
+            descending over SE Asia passes around 22:00 UTC.
+        max_retries: Maximum download attempts per date.
+        retry_backoff_s: Seconds to wait between retry attempts.
+
+    Returns:
+        List of paths to successfully downloaded GRIB files.
+    """
+    import cdsapi
+
+    _ensure_cdsapirc()
+    if not _is_cds_api_available():
+        logger.warning(
+            "CDS API credentials not available. Skipping ERA5 pre-download."
+        )
+        return []
+
+    snwe = _compute_era5_snwe(bbox)
+    s, n, w, e = snwe
+    area_str = _snwe_to_str(snwe)
+
+    grib_dir = weather_dir / "ERA5"
+    grib_dir.mkdir(parents=True, exist_ok=True)
+
+    # CDS API area format: [North, West, South, East]
+    cds_area = [n, w, s, e]
+
+    logger.info(
+        "Pre-downloading ERA5 data for %d dates, SNWE=(%d,%d,%d,%d), hour=%s",
+        len(dates), s, n, w, e, hour,
+    )
+
+    downloaded = []
+    failed = []
+
+    # Read CDS API credentials from environment or rc file
+    api_url = os.environ.get("CDS_API_URL", "https://cds.climate.copernicus.eu/api")
+    api_key = os.environ.get("CDS_API_KEY", "")
+    if not api_key:
+        # Fall back to reading from .cdsapirc (already ensured above)
+        cdsapirc = Path.home() / ".cdsapirc"
+        if cdsapirc.exists():
+            for line in cdsapirc.read_text().splitlines():
+                if line.startswith("key:"):
+                    api_key = line.split(":", 1)[1].strip()
+                elif line.startswith("url:"):
+                    api_url = line.split(":", 1)[1].strip()
+
+    client = cdsapi.Client(url=api_url, key=api_key)
+
+    for date_str in sorted(dates):
+        fname = f"ERA5{area_str}_{date_str}_{hour}.grb"
+        grib_path = grib_dir / fname
+
+        if grib_path.exists() and grib_path.stat().st_size > 0:
+            logger.info("ERA5 already exists, skipping: %s", fname)
+            downloaded.append(grib_path)
+            continue
+
+        # Parse date components for CDS API
+        year = date_str[:4]
+        month = date_str[4:6]
+        day = date_str[6:8]
+
+        request_params = {
+            "product_type": ["reanalysis"],
+            "variable": [
+                "geopotential",
+                "specific_humidity",
+                "temperature",
+            ],
+            "pressure_level": _ERA5_PRESSURE_LEVELS,
+            "year": year,
+            "month": month,
+            "day": day,
+            "time": f"{hour}:00",
+            "area": cds_area,
+            "data_format": "grib",
+        }
+
+        success = False
+        for attempt in range(1, max_retries + 1):
+            try:
+                logger.info(
+                    "Downloading ERA5 for %s (attempt %d/%d): %s",
+                    date_str, attempt, max_retries, fname,
+                )
+                client.retrieve(
+                    "reanalysis-era5-pressure-levels",
+                    request_params,
+                    str(grib_path),
+                )
+
+                if grib_path.exists() and grib_path.stat().st_size > 0:
+                    logger.info("ERA5 downloaded: %s (%.1f MB)",
+                                fname, grib_path.stat().st_size / 1e6)
+                    downloaded.append(grib_path)
+                    success = True
+                    break
+                else:
+                    logger.warning("ERA5 download produced empty file: %s", fname)
+
+            except Exception as exc:
+                logger.warning(
+                    "ERA5 download failed for %s (attempt %d/%d): %s",
+                    date_str, attempt, max_retries, exc,
+                )
+                # Clean up partial file
+                if grib_path.exists():
+                    grib_path.unlink()
+
+                if attempt < max_retries:
+                    wait = retry_backoff_s * attempt
+                    logger.info("Retrying in %.0f seconds...", wait)
+                    time.sleep(wait)
+
+        if not success:
+            failed.append(date_str)
+            logger.error("ERA5 download failed after %d attempts: %s", max_retries, date_str)
+
+    logger.info(
+        "ERA5 pre-download complete: %d/%d dates succeeded, %d failed",
+        len(downloaded), len(dates), len(failed),
+    )
+    if failed:
+        logger.warning("Failed dates: %s", ", ".join(failed))
+
+    return downloaded
 
 
 def generate_mintpy_config(

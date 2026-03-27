@@ -185,6 +185,64 @@ class TestMNDWI:
         assert mndwi[0, 1] < 0  # Vegetation: green < SWIR
 
 
+class TestValidation:
+    """Tests for the cross-validation module."""
+
+    def test_extract_valid_pairs(self):
+        from peatguard.analysis.validation import _extract_valid_pairs
+
+        a = np.array([1.0, -9999.0, 3.0, np.nan, 5.0], dtype=np.float32)
+        b = np.array([10.0, 20.0, -9999.0, 40.0, 50.0], dtype=np.float32)
+        va, vb = _extract_valid_pairs(a, b)
+        assert len(va) == 2  # Only indices 0 and 4 are valid in both
+        assert va[0] == pytest.approx(1.0)
+        assert vb[0] == pytest.approx(10.0)
+
+    def test_compute_correlation_positive(self):
+        from peatguard.analysis.validation import _compute_correlation
+
+        np.random.seed(42)
+        x = np.arange(200, dtype=np.float64)
+        y = 2.0 * x + np.random.randn(200) * 5.0
+        result = _compute_correlation(x, y, "test_positive")
+        assert result["correlation_r"] > 0.95
+        assert result["p_value"] < 0.001
+        assert result["status"] == "significant"
+
+    def test_compute_correlation_insufficient_data(self):
+        from peatguard.analysis.validation import _compute_correlation
+
+        x = np.array([1.0, 2.0])
+        y = np.array([3.0, 4.0])
+        result = _compute_correlation(x, y, "test_small", min_pixels=100)
+        assert result["status"] == "insufficient_data"
+        assert np.isnan(result["correlation_r"])
+
+    def test_zonal_stats(self):
+        from peatguard.analysis.validation import _compute_zonal_stats
+
+        velocity = np.full((100, 100), -20.0, dtype=np.float32)
+        velocity[:50, :] = -40.0  # Top half: more subsidence
+        mask = np.zeros((100, 100), dtype=bool)
+        mask[:50, :] = True  # Top half is "cleared"
+
+        result = _compute_zonal_stats(velocity, mask)
+        assert result["cleared_mean_mm_yr"] == pytest.approx(-40.0)
+        assert result["forested_mean_mm_yr"] == pytest.approx(-20.0)
+        assert result["difference_significant"] is True
+
+    def test_velocity_backscatter_correlation_synthetic(self, sample_velocity, sample_vv_backscatter):
+        """Verify the correlation function runs on synthetic data without errors."""
+        from peatguard.analysis.validation import _extract_valid_pairs, _compute_correlation
+
+        vel_vals, vv_vals = _extract_valid_pairs(
+            sample_velocity, sample_vv_backscatter,
+        )
+        result = _compute_correlation(vel_vals, vv_vals, "synthetic_test")
+        assert result["n_valid_pixels"] > 0
+        assert isinstance(result["correlation_r"], float)
+
+
 class TestDeramp:
     def test_removes_linear_trend(self):
         rows, cols = 100, 100
