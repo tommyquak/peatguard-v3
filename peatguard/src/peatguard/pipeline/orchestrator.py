@@ -1556,6 +1556,57 @@ def run_analysis_stage(
     else:
         logger.info("VV backscatter not available, skipping canal detection and risk scoring")
 
+    # Carbon loss estimation: convert vertical subsidence rate to CO2 emission rate.
+    # Uses Hooijer et al. (2012) empirical factor: 1 mm/yr subsidence ~ 0.5 tCO2/ha/yr
+    # for tropical peat (conservative; some studies report 0.7-1.0).
+    # Masked to peat areas only via peat_extent_binary.
+    HOOIJER_CO2_FACTOR = 0.5  # tCO2/ha/yr per mm/yr subsidence
+    carbon_loss_path = output_dir / "carbon_loss.tif"
+    try:
+        vel_data_cl, vel_meta_cl = read_raster(velocity_path)
+        vel_arr = vel_data_cl[0]
+        vel_nodata = vel_meta_cl["nodata"] if vel_meta_cl["nodata"] is not None else -9999.0
+        valid_vel = (vel_arr != vel_nodata) & np.isfinite(vel_arr)
+
+        # Carbon loss = |negative velocity| * factor (only subsidence, not uplift)
+        carbon_loss = np.full_like(vel_arr, -9999.0, dtype=np.float32)
+        subsiding = valid_vel & (vel_arr < 0)
+        carbon_loss[subsiding] = np.abs(vel_arr[subsiding]) * HOOIJER_CO2_FACTOR
+        carbon_loss[valid_vel & ~subsiding] = 0.0
+
+        # Mask to peat areas if available
+        peat_binary_path = products.get("peat_extent_binary")
+        if peat_binary_path and peat_binary_path.exists():
+            peat_data, _ = read_raster(peat_binary_path)
+            peat_mask = peat_data[0].astype(bool)
+            if peat_mask.shape == carbon_loss.shape:
+                carbon_loss[~peat_mask] = -9999.0
+            del peat_data, peat_mask
+
+        write_cog(
+            data=carbon_loss,
+            output_path=carbon_loss_path,
+            crs=vel_meta_cl["crs"],
+            transform=vel_meta_cl["transform"],
+            nodata=-9999.0,
+            band_names=["carbon_loss_tCO2_ha_yr"],
+            dtype="float32",
+        )
+        products["carbon_loss"] = carbon_loss_path
+
+        valid_cl = carbon_loss[carbon_loss != -9999.0]
+        if valid_cl.size > 0:
+            total_area_ha = valid_cl.size * (abs(vel_meta_cl["transform"][0]) * 111320) * \
+                (abs(vel_meta_cl["transform"][4]) * 111320) / 10000
+            total_emission = float(np.mean(valid_cl)) * total_area_ha
+            logger.info(
+                "Carbon loss: mean=%.1f tCO2/ha/yr, total=%.0f tCO2/yr over %.0f ha peat",
+                np.mean(valid_cl), total_emission, total_area_ha,
+            )
+        del vel_data_cl, vel_arr, carbon_loss, valid_cl
+    except Exception as exc:
+        logger.warning("Carbon loss estimation failed (non-fatal): %s", exc)
+
     # Multi-sensor fusion: combine C-band and L-band velocity if both available
     if config.fusion.enabled:
         fusion_products = _run_fusion(config, output_dir, products)
