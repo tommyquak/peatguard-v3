@@ -140,10 +140,23 @@ def generate_risk_map(
 
     nodata = vel_meta["nodata"] if vel_meta["nodata"] is not None else -9999.0
 
+    # Smooth velocity with a median filter to reduce pixel-level noise before
+    # risk scoring. InSAR velocity has high-frequency noise (std ~80-100 mm/yr)
+    # that creates blotchy risk maps. A 5x5 median preserves edges (canal
+    # boundaries, land cover transitions) while suppressing speckle-like noise.
+    from scipy.ndimage import median_filter
+    valid = (velocity != nodata) & np.isfinite(velocity)
+    vel_smoothed = velocity.copy()
+    vel_smoothed[~valid] = 0.0  # fill nodata for filter
+    vel_smoothed = median_filter(vel_smoothed, size=5).astype(np.float32)
+    vel_smoothed[~valid] = nodata  # restore nodata
+    logger.info("Applied 5x5 median filter to velocity before risk scoring")
+
     proximity_risk = compute_proximity_risk(distance, max_influence_m)
     subsidence_risk = compute_subsidence_risk(
-        velocity, severe_threshold=severe_velocity_mm_yr, nodata=nodata
+        vel_smoothed, severe_threshold=severe_velocity_mm_yr, nodata=nodata
     )
+    del vel_smoothed
     combined = compute_combined_risk(
         proximity_risk,
         subsidence_risk,
