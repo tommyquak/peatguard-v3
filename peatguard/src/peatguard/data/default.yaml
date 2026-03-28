@@ -58,8 +58,8 @@ water_mask:
   # detections over open water. Water produces specular reflection
   # (very low backscatter) that mimics low InSAR coherence.
   enabled: true
-  vv_threshold_db: -25.0       # dB threshold; conservative to avoid masking wet peat
-  min_water_size_pixels: 100   # min connected component size (100 px @ 10m = 1 hectare)
+  vv_threshold_db: -18.0       # dB threshold; catches river and major water bodies
+  min_water_size_pixels: 25    # min connected component size (25 px @ 10m = 2500 sq m)
   closing_radius: 3            # morphological closing radius (fills small gaps)
   exclude_canals: true         # remove canal pixels from water mask
 
