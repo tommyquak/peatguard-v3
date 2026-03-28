@@ -179,7 +179,7 @@ def export_velocity(
     mintpy_dir: Path,
     output_dir: Path,
     config: Optional[PeatGuardConfig] = None,
-    coherence_mask_threshold: float = 0.3,  # Minimum; 0.4-0.5 recommended for tropical peat
+    coherence_mask_threshold: float = 0.5,  # 0.5 for tropical peat; masks noisy low-coherence pixels
 ) -> dict[str, Path]:
     """Export MintPy velocity and uncertainty as COG GeoTIFFs.
 
@@ -221,14 +221,11 @@ def export_velocity(
     )
     velocity_m_yr *= factor
 
-    # Convert m/yr to mm/yr and clamp extreme outliers
+    # Convert m/yr to mm/yr. Do NOT clamp here -- noisy pixels are handled
+    # by the coherence mask below (threshold 0.5). Clamping extreme values
+    # before masking biases the mean when many pixels are at the clamp bound.
     velocity_mm_yr = velocity_m_yr * 1000.0
     valid_mask = np.isfinite(velocity_mm_yr)
-    # Clamp to [-100, +100] mm/yr. The previous [-200, +200] range allowed too
-    # many noisy outliers through, especially from low-coherence pixels in
-    # tropical peat. For tropical peatland, realistic subsidence rarely
-    # exceeds -100 mm/yr and uplift rarely exceeds +100 mm/yr.
-    velocity_mm_yr[valid_mask] = np.clip(velocity_mm_yr[valid_mask], -100.0, 100.0)
 
     # Read velocity uncertainty if available
     velocity_std = None
