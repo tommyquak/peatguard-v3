@@ -68,9 +68,9 @@ _VALIDATION_COHORTS = {
 def _determine_hansen_tile(bbox: list[float]) -> str:
     """Determine the Hansen 10x10 degree tile name covering a bounding box.
 
-    Hansen tiles are named by their southwest corner, snapped to the nearest
-    10-degree grid. For example, tile "10S_110E" covers latitudes 0 to -10
-    and longitudes 110 to 120.
+    Hansen tiles are named by their northwest (top-left) corner, snapped to
+    the nearest 10-degree grid. For example, tile "00N_110E" covers latitudes
+    0 to -10 and longitudes 110 to 120.
 
     Args:
         bbox: Bounding box as [west, south, east, north].
@@ -102,11 +102,16 @@ def _determine_hansen_tile(bbox: list[float]) -> str:
     lon_tile = math.floor(center_lon / 10) * 10
 
     # Format tile name: latitude uses absolute value + N/S, longitude + E/W
-    # The tile name represents the edge AWAY from the equator
-    if lat_tile >= 0:
-        lat_str = f"{abs(lat_tile + 10)}N" if lat_tile + 10 > 0 else "00N"
+    # Hansen convention: tile name is the NORTHERN edge (top-left corner lat)
+    # Tile covering 0 to -10: northern edge = 0, name = "00N"
+    # Tile covering -10 to -20: northern edge = -10, name = "10S"
+    north_edge = lat_tile + 10
+    if north_edge > 0:
+        lat_str = f"{abs(north_edge):02d}N"
+    elif north_edge == 0:
+        lat_str = "00N"
     else:
-        lat_str = f"{abs(lat_tile)}S" if lat_tile != 0 else "00N"
+        lat_str = f"{abs(north_edge):02d}S"
 
     if lon_tile >= 0:
         lon_str = f"{abs(lon_tile):03d}E"

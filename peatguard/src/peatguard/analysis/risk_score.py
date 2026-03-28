@@ -147,7 +147,11 @@ def generate_risk_map(
     from scipy.ndimage import median_filter
     valid = (velocity != nodata) & np.isfinite(velocity)
     vel_smoothed = velocity.copy()
-    vel_smoothed[~valid] = 0.0  # fill nodata for filter
+    # Fill nodata with global median (not 0) to avoid edge bias. Filling with
+    # 0 biases the median filter toward 0 at valid/nodata boundaries, since
+    # the global median (~-25 mm/yr) is much closer to real peat velocities.
+    global_median = np.median(velocity[valid]) if np.any(valid) else 0.0
+    vel_smoothed[~valid] = global_median
     vel_smoothed = median_filter(vel_smoothed, size=5).astype(np.float32)
     vel_smoothed[~valid] = nodata  # restore nodata
     logger.info("Applied 5x5 median filter to velocity before risk scoring")

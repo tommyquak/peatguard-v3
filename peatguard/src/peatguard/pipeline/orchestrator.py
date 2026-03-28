@@ -1665,10 +1665,13 @@ def run_analysis_stage(
                 del low_coh
             del coh_data, coh_arr
 
-        # Smooth velocity with median filter to reduce noise
+        # Smooth velocity with median filter to reduce noise.
+        # Fill nodata with global median (not 0) to avoid edge bias at
+        # valid/nodata boundaries.
         from scipy.ndimage import median_filter
         vel_smooth = vel_arr.copy()
-        vel_smooth[~valid_vel] = 0.0
+        global_median = float(np.median(vel_arr[valid_vel])) if np.any(valid_vel) else 0.0
+        vel_smooth[~valid_vel] = global_median
         vel_smooth = median_filter(vel_smooth, size=5).astype(np.float32)
         vel_smooth[~valid_vel] = vel_nodata
 
@@ -1701,8 +1704,16 @@ def run_analysis_stage(
 
         valid_cl = carbon_loss[carbon_loss != -9999.0]
         if valid_cl.size > 0:
-            total_area_ha = valid_cl.size * (abs(vel_meta_cl["transform"][0]) * 111320) * \
-                (abs(vel_meta_cl["transform"][4]) * 111320) / 10000
+            pixel_x = abs(vel_meta_cl["transform"][0])
+            pixel_y = abs(vel_meta_cl["transform"][4])
+            crs = vel_meta_cl.get("crs")
+            if crs and str(crs).startswith("EPSG:326"):
+                # UTM: transform is already in meters
+                pixel_area_m2 = pixel_x * pixel_y
+            else:
+                # Geographic: convert degrees to meters
+                pixel_area_m2 = (pixel_x * 111320) * (pixel_y * 111320)
+            total_area_ha = valid_cl.size * pixel_area_m2 / 10000
             total_emission = float(np.mean(valid_cl)) * total_area_ha
             logger.info(
                 "Carbon loss: mean=%.1f tCO2/ha/yr, total=%.0f tCO2/yr over %.0f ha peat",
