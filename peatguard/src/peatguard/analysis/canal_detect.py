@@ -182,30 +182,8 @@ def morphological_cleanup(
     # Close small gaps between canal segments
     closed = binary_closing(canal_mask, disk(2))
 
-    # Remove small isolated detections
+    # Remove small isolated detections (noise, speckle artifacts)
     cleaned = remove_small_objects(closed, min_size=min_length_pixels)
-
-    # Linearity filter: keep only elongated components (aspect ratio > 3).
-    # Canals are linear features; dark blobs (e.g. shadows, ponds) are not.
-    min_aspect_ratio = 3.0
-    labeled = label(cleaned)
-    props = regionprops(labeled)
-    removed_count = 0
-    for region in props:
-        if region.minor_axis_length > 0:
-            aspect = region.major_axis_length / region.minor_axis_length
-        else:
-            aspect = float("inf")
-        if aspect < min_aspect_ratio:
-            cleaned[labeled == region.label] = False
-            removed_count += 1
-    logger.info(
-        "Linearity filter: removed %d non-linear components out of %d "
-        "(min aspect ratio %.1f)",
-        removed_count,
-        len(props),
-        min_aspect_ratio,
-    )
 
     # Optional: thin to centerline for vector extraction
     # skeleton = skeletonize(cleaned)
