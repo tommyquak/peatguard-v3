@@ -61,7 +61,7 @@ water_mask:
   vv_threshold_db: -18.0       # dB threshold; catches river and major water bodies
   min_water_size_pixels: 25    # min connected component size (25 px @ 10m = 2500 sq m)
   closing_radius: 3            # morphological closing radius (fills small gaps)
-  exclude_canals: true         # remove canal pixels from water mask
+  exclude_canals: false        # disabled: canal mask too broad (19.8%) removes all water
 
 peat_mask:
   # Peat extent mapping from WRI/GFW Indonesia Peatlands dataset.
