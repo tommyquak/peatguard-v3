@@ -154,7 +154,7 @@ def ridge_detect_canals(
 
 def morphological_cleanup(
     canal_mask: np.ndarray,
-    min_length_pixels: int = 10,
+    min_length_pixels: int = 50,
     dilation_size: int = 3,
 ) -> np.ndarray:
     """Clean up canal detections using morphological operations.
@@ -282,7 +282,7 @@ def detect_canals(
     output_mask_path: Optional[Path] = None,
     output_distance_path: Optional[Path] = None,
     percentile: float = 10.0,
-    min_length_pixels: int = 10,
+    min_length_pixels: int = 50,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Full canal detection pipeline from a VV backscatter GeoTIFF.
 
