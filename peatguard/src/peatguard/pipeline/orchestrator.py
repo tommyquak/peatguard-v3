@@ -1408,7 +1408,21 @@ def run_analysis_stage(
             water_mask_path = output_dir / "water_mask.tif"
             canal_for_exclusion = canal_mask_path if config.water_mask.exclude_canals else None
 
+            # Try to find or download the dB product for water masking.
+            # The dB scale gives more intuitive thresholding than linear.
             vv_db_path = output_dir / "vv_median_db.tif"
+            if not vv_db_path.exists() and config.storage.gcs_bucket:
+                try:
+                    from peatguard.export.gcs import download_file
+                    download_file(
+                        config.storage.gcs_bucket,
+                        "products/vv_median_db.tif",
+                        vv_db_path,
+                    )
+                    logger.info("Downloaded dB product from GCS: %s", vv_db_path)
+                except Exception:
+                    logger.debug("Could not download dB product from GCS")
+
             if vv_db_path.exists():
                 water_vv_path = vv_db_path
                 water_is_db = True
@@ -1416,10 +1430,7 @@ def run_analysis_stage(
             else:
                 water_vv_path = vv_path
                 water_is_db = False
-                logger.info(
-                    "dB product not found at %s, falling back to linear VV",
-                    vv_db_path,
-                )
+                logger.info("dB product not available, using linear VV for water masking")
 
             generate_water_mask(
                 water_vv_path,
