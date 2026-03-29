@@ -302,39 +302,13 @@ def detect_canals(
     # Get pixel resolution from transform
     pixel_res = abs(metadata["transform"][0])
 
-    # --- Method 1: Threshold (catches wide water-filled canals) ---
-    threshold_mask = threshold_canals(vv, percentile=percentile)
-
-    # --- Method 2: Ridge detection (catches narrow drainage ditches) ---
-    ridge_mask = ridge_detect_canals(
-        vv,
-        sigmas=range(1, 4),
-        nodata=-9999.0,
-    )
-
-    # --- Union both masks ---
-    combined_mask = threshold_mask | ridge_mask
-
-    # Log contribution of each method
-    threshold_only = int((threshold_mask & ~ridge_mask).sum())
-    ridge_only = int((ridge_mask & ~threshold_mask).sum())
-    both = int((threshold_mask & ridge_mask).sum())
-    logger.info(
-        "Canal detection union: %d threshold-only, %d ridge-only, "
-        "%d overlap, %d combined pixels",
-        threshold_only,
-        ridge_only,
-        both,
-        int(combined_mask.sum()),
-    )
-
-    # Free individual masks before cleanup
-    del threshold_mask, ridge_mask
-    gc.collect()
-
-    # Morphological cleanup on combined mask
-    clean_mask = morphological_cleanup(combined_mask, min_length_pixels=min_length_pixels)
-    del combined_mask
+    # Threshold-only detection: 10th percentile of backscatter catches
+    # water-filled canals and the river. Ridge detection was removed because
+    # it added too much noise (~20% coverage vs expected 5-10%), inflating
+    # the canal proximity risk for the entire AOI.
+    raw_mask = threshold_canals(vv, percentile=percentile)
+    clean_mask = morphological_cleanup(raw_mask, min_length_pixels=min_length_pixels)
+    del raw_mask
     gc.collect()
 
     distance_m = compute_canal_distance(clean_mask, pixel_resolution_m=pixel_res)
