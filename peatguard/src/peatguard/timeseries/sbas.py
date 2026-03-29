@@ -164,6 +164,7 @@ def run_smallbaselineApp_from_step(
     config_path: Path,
     work_dir: Path,
     start_step: str = "modify_network",
+    end_step: Optional[str] = None,
 ) -> Path:
     """Run smallbaselineApp.py starting from a specific step.
 
@@ -174,13 +175,23 @@ def run_smallbaselineApp_from_step(
         config_path: Path to the MintPy template file.
         work_dir: MintPy working directory.
         start_step: Step name to start from (without .py extension).
+        end_step: Optional step name to stop after (inclusive).
+            If None, runs through to the end.
 
     Returns:
         Path to the velocity file.
     """
-    logger.info("Running smallbaselineApp.py --start %s", start_step)
+    if end_step:
+        logger.info(
+            "Running smallbaselineApp.py --start %s --end %s",
+            start_step, end_step,
+        )
+    else:
+        logger.info("Running smallbaselineApp.py --start %s", start_step)
 
     cmd = ["smallbaselineApp.py", str(config_path), "--start", start_step]
+    if end_step:
+        cmd.extend(["--end", end_step])
 
     result = subprocess.run(
         cmd,

@@ -404,6 +404,7 @@ def generate_mintpy_config(
     mintpy_dir: Path,
     config: PeatGuardConfig,
     weather_dir: Optional[Path] = None,
+    override_ref_yx: Optional[tuple[int, int]] = None,
 ) -> Path:
     """Generate a MintPy configuration template file.
 
@@ -412,6 +413,9 @@ def generate_mintpy_config(
         mintpy_dir: MintPy working directory.
         config: Pipeline configuration.
         weather_dir: Directory for ERA5 weather model data.
+        override_ref_yx: Optional (Y, X) pixel coordinates to force as the
+            reference point. Used by the two-phase ERA5 reference selection
+            to lock the reference determined from uncorrected data.
 
     Returns:
         Path to the generated MintPy config file.
@@ -427,10 +431,22 @@ def generate_mintpy_config(
     coh_based = "yes" if config.mintpy.network_modification.coherence_based else "no"
     min_coh = config.mintpy.network_modification.min_coherence
 
-    # Build reference point configuration from config.
-    # A fixed lat/lon ensures deterministic velocity baselines across runs.
-    ref_lalo = config.mintpy.reference_lalo
-    if ref_lalo and len(ref_lalo) == 2:
+    # Build reference point configuration.
+    # Priority: override_ref_yx (from two-phase ERA5 selection) > config lat/lon > auto.
+    if override_ref_yx is not None:
+        ref_y, ref_x = override_ref_yx
+        reference_point_block = (
+            "    ## Fixed reference point from two-phase ERA5 selection (pixel coords)\n"
+            f"    mintpy.reference.yx         = {ref_y}, {ref_x}\n"
+            f"    mintpy.reference.minCoherence = {config.mintpy.reference_min_coherence}\n"
+            "    mintpy.reference.maskFile    = no"
+        )
+        logger.info(
+            "Using locked reference point from phase 1: Y=%d, X=%d",
+            ref_y, ref_x,
+        )
+    elif config.mintpy.reference_lalo and len(config.mintpy.reference_lalo) == 2:
+        ref_lalo = config.mintpy.reference_lalo
         reference_point_block = (
             "    ## Fixed reference point on stable ground (configured in YAML)\n"
             f"    mintpy.reference.lalo       = {ref_lalo[0]}, {ref_lalo[1]}\n"

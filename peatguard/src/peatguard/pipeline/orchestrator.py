@@ -787,13 +787,13 @@ def run_timeseries_stage(
     # load_data (we already created the HDF5 files directly)
     weather_dir = mintpy_dir / "weather"
     weather_dir.mkdir(exist_ok=True)
-    config_path = generate_mintpy_config(isce_dir, mintpy_dir, config, weather_dir=weather_dir)
 
     # Pre-download ERA5 data one date at a time with retry logic.
     # This prevents the CDS API timeout that occurs when MintPy/PyAPS
     # tries to bulk-download all dates in a single request.
     tropo_setting = config.mintpy.tropospheric_correction.lower()
-    if tropo_setting in ("pyaps", "era5"):
+    era5_enabled = tropo_setting in ("pyaps", "era5")
+    if era5_enabled:
         ifg_dates = set()
         for d in (isce_dir / "merged" / "interferograms").iterdir():
             if d.is_dir():
@@ -809,7 +809,80 @@ def run_timeseries_stage(
             )
 
     from peatguard.timeseries.sbas import run_smallbaselineApp_from_step
-    run_smallbaselineApp_from_step(config_path, mintpy_dir, start_step="modify_network")
+
+    # Two-phase reference point selection to prevent ERA5 velocity bias.
+    #
+    # ERA5 tropospheric correction changes the phase pattern, which can cause
+    # MintPy to auto-select a different reference point. This shifts the
+    # entire velocity field (observed +35 mm/yr bias). To prevent this:
+    #   Phase 1: Run modify_network -> reference_point WITHOUT ERA5 correction.
+    #            This selects the reference on uncorrected data (physically correct).
+    #   Phase 2: Extract the selected reference coordinates, regenerate the config
+    #            with ERA5 enabled AND the fixed reference, then run the full chain.
+    ref_lalo = config.mintpy.reference_lalo
+    has_fixed_ref = ref_lalo and len(ref_lalo) == 2
+
+    if era5_enabled and not has_fixed_ref:
+        logger.info(
+            "ERA5 enabled without fixed reference point. Running two-phase "
+            "reference selection to prevent velocity bias."
+        )
+
+        # Phase 1: Generate config WITHOUT ERA5, run through reference_point only
+        from peatguard.timeseries.mintpy_prep import _is_cds_api_available
+        original_tropo = config.mintpy.tropospheric_correction
+        config.mintpy.tropospheric_correction = "no"
+        phase1_config_path = generate_mintpy_config(
+            isce_dir, mintpy_dir, config, weather_dir=weather_dir
+        )
+        config.mintpy.tropospheric_correction = original_tropo
+
+        run_smallbaselineApp_from_step(
+            phase1_config_path, mintpy_dir,
+            start_step="modify_network", end_step="reference_point",
+        )
+
+        # Extract the auto-selected reference point from ifgramStack.h5 attributes
+        import h5py
+        ifgram_h5 = mintpy_dir / "inputs" / "ifgramStack.h5"
+        ref_y, ref_x = -1, -1
+        with h5py.File(str(ifgram_h5), "r") as f:
+            ref_y = int(f.attrs.get("REF_Y", -1))
+            ref_x = int(f.attrs.get("REF_X", -1))
+
+        if ref_y < 0 or ref_x < 0:
+            logger.warning(
+                "Could not extract reference point from ifgramStack.h5 "
+                "(REF_Y=%d, REF_X=%d). Falling back to auto-selection.",
+                ref_y, ref_x,
+            )
+            config_path = generate_mintpy_config(
+                isce_dir, mintpy_dir, config, weather_dir=weather_dir
+            )
+        else:
+            logger.info(
+                "Phase 1 reference point selected: REF_Y=%d, REF_X=%d. "
+                "Locking for ERA5 run.",
+                ref_y, ref_x,
+            )
+            # Phase 2: Regenerate config WITH ERA5 and the fixed reference (Y, X)
+            config_path = generate_mintpy_config(
+                isce_dir, mintpy_dir, config, weather_dir=weather_dir,
+                override_ref_yx=(ref_y, ref_x),
+            )
+
+        # Phase 2: Run the full chain with ERA5 + fixed reference
+        run_smallbaselineApp_from_step(
+            config_path, mintpy_dir, start_step="modify_network"
+        )
+    else:
+        # No ERA5 or already have a fixed reference -- single pass is fine
+        config_path = generate_mintpy_config(
+            isce_dir, mintpy_dir, config, weather_dir=weather_dir
+        )
+        run_smallbaselineApp_from_step(
+            config_path, mintpy_dir, start_step="modify_network"
+        )
 
     # Export velocity products as COG GeoTIFFs
     velocity_products = export_velocity(mintpy_dir, config.storage.output_dir, config)
@@ -1325,18 +1398,35 @@ def run_analysis_stage(
         products["canal_mask"] = canal_mask_path
         products["canal_distance"] = canal_dist_path
 
-        # Water mask generation (uses VV backscatter, excludes canal pixels)
+        # Water mask generation (uses VV backscatter, excludes canal pixels).
+        # Prefer the dB product for water masking -- thresholding in dB space
+        # is more intuitive and avoids precision issues at the low end of
+        # linear scale (water: -18 dB = 0.016 linear, easily missed).
         if config.water_mask.enabled:
             from peatguard.analysis.water_mask import generate_water_mask
 
             water_mask_path = output_dir / "water_mask.tif"
             canal_for_exclusion = canal_mask_path if config.water_mask.exclude_canals else None
+
+            vv_db_path = output_dir / "vv_median_db.tif"
+            if vv_db_path.exists():
+                water_vv_path = vv_db_path
+                water_is_db = True
+                logger.info("Using dB product for water masking: %s", vv_db_path)
+            else:
+                water_vv_path = vv_path
+                water_is_db = False
+                logger.info(
+                    "dB product not found at %s, falling back to linear VV",
+                    vv_db_path,
+                )
+
             generate_water_mask(
-                vv_path,
+                water_vv_path,
                 water_mask_path,
                 canal_mask_path=canal_for_exclusion,
                 water_config=config.water_mask,
-                is_db=False,  # vv_median.tif is linear scale
+                is_db=water_is_db,
             )
             products["water_mask"] = water_mask_path
             logger.info("Water mask generated: %s", water_mask_path)
