@@ -13,7 +13,7 @@ aoi:
 sentinel1:
   platform: SENTINEL-1
   polarization: VV
-  subswath: IW2
+  subswath: IW3
   processing_level_slc: SLC
   processing_level_grd: GRD_HD
   beam_mode: IW
