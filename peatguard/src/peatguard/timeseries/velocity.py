@@ -250,7 +250,8 @@ def export_velocity(
         west, south, east, north = config.aoi.bbox
         # Add buffer (0.1 deg ~11km) to match backscatter's 10km buffer
         buf = 0.1
-        west_b, south_b, east_b, north_b = west - buf, south - buf, east + buf, north + buf
+        west_buf = 0.02  # Smaller western buffer to exclude noisy IW3 edge
+        west_b, south_b, east_b, north_b = west - west_buf, south - buf, east + buf, north + buf
 
         # Find pixel window corresponding to AOI bbox
         col_start = max(0, int((west_b - transform.c) / transform.a))

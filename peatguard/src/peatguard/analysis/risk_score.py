@@ -152,9 +152,9 @@ def generate_risk_map(
     # the global median (~-25 mm/yr) is much closer to real peat velocities.
     global_median = np.median(velocity[valid]) if np.any(valid) else 0.0
     vel_smoothed[~valid] = global_median
-    vel_smoothed = median_filter(vel_smoothed, size=5).astype(np.float32)
+    vel_smoothed = median_filter(vel_smoothed, size=9).astype(np.float32)
     vel_smoothed[~valid] = nodata  # restore nodata
-    logger.info("Applied 5x5 median filter to velocity before risk scoring")
+    logger.info("Applied 9x9 median filter to velocity before risk scoring")
 
     proximity_risk = compute_proximity_risk(distance, max_influence_m)
     subsidence_risk = compute_subsidence_risk(

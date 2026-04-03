@@ -1757,10 +1757,10 @@ def run_analysis_stage(
             coh_data, _ = read_raster(coherence_path)
             coh_arr = coh_data[0]
             if coh_arr.shape == vel_arr.shape:
-                low_coh = coh_arr < 0.5
+                low_coh = coh_arr < 0.7
                 valid_vel = valid_vel & ~low_coh
                 logger.info(
-                    "Carbon loss: filtered %d low-coherence pixels (<0.5)",
+                    "Carbon loss: filtered %d low-coherence pixels (<0.7)",
                     int(low_coh.sum()),
                 )
                 del low_coh
@@ -1773,7 +1773,7 @@ def run_analysis_stage(
         vel_smooth = vel_arr.copy()
         global_median = float(np.median(vel_arr[valid_vel])) if np.any(valid_vel) else 0.0
         vel_smooth[~valid_vel] = global_median
-        vel_smooth = median_filter(vel_smooth, size=5).astype(np.float32)
+        vel_smooth = median_filter(vel_smooth, size=9).astype(np.float32)
         vel_smooth[~valid_vel] = vel_nodata
 
         # Carbon loss = |negative velocity| * factor (only subsidence, not uplift)
@@ -1783,13 +1783,28 @@ def run_analysis_stage(
         carbon_loss[valid_vel & ~subsiding] = 0.0
         del vel_smooth
 
-        # Exclude water pixels
+        # Exclude water pixels and buffer water bodies by ~100m to remove
+        # unreliable velocity near water/land boundaries where coherence degrades.
         water_path = products.get("water_mask")
         if water_path and water_path.exists():
             wm_data, _ = read_raster(water_path)
             wm_arr = wm_data[0].astype(bool)
             if wm_arr.shape == carbon_loss.shape:
-                carbon_loss[wm_arr] = -9999.0
+                # Buffer water bodies by ~100m. At ~40m pixel resolution
+                # (EPSG:4326 carbon loss grid), 100m is ~2.5 pixels; use disk(3).
+                from scipy.ndimage import binary_dilation
+                from skimage.morphology import disk
+                water_buffered = binary_dilation(wm_arr, structure=disk(3).astype(bool))
+                carbon_loss[water_buffered] = -9999.0
+                del water_buffered
+            else:
+                # Shape mismatch (e.g. UTM water mask vs EPSG:4326 carbon loss);
+                # cannot apply buffer or mask without reprojection.
+                logger.info(
+                    "Water mask shape %s differs from carbon loss %s; "
+                    "skipping water exclusion for carbon loss",
+                    wm_arr.shape, carbon_loss.shape,
+                )
             del wm_data, wm_arr
 
         write_cog(

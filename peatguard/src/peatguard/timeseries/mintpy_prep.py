@@ -214,27 +214,6 @@ def _compute_era5_snwe(bbox: list[float]) -> tuple[int, int, int, int]:
     return s, n, w, e
 
 
-def _snwe_to_str(snwe: tuple[int, int, int, int]) -> str:
-    """Convert SNWE tuple to PyAPS filename string.
-
-    Matches MintPy's snwe2str convention: negative latitudes use 'S',
-    negative longitudes use 'W'.
-
-    Args:
-        snwe: Tuple of (S, N, W, E) as integers.
-
-    Returns:
-        String like '_S10_N0_E110_E120'.
-    """
-    s, n, w, e = snwe
-    area = ""
-    area += f"_S{abs(s)}" if s < 0 else f"_N{abs(s)}"
-    area += f"_S{abs(n)}" if n < 0 else f"_N{abs(n)}"
-    area += f"_W{abs(w)}" if w < 0 else f"_E{abs(w)}"
-    area += f"_W{abs(e)}" if e < 0 else f"_E{abs(e)}"
-    return area
-
-
 # ERA5 pressure levels used by PyAPS for tropospheric delay calculation.
 # Must match the levels PyAPS expects in its GRIB files.
 _ERA5_PRESSURE_LEVELS = [
@@ -288,7 +267,6 @@ def pre_download_era5(
 
     snwe = _compute_era5_snwe(bbox)
     s, n, w, e = snwe
-    area_str = _snwe_to_str(snwe)
 
     grib_dir = weather_dir / "ERA5"
     grib_dir.mkdir(parents=True, exist_ok=True)
@@ -320,7 +298,7 @@ def pre_download_era5(
     client = cdsapi.Client(url=api_url, key=api_key)
 
     for date_str in sorted(dates):
-        fname = f"ERA5{area_str}_{date_str}_{hour}.grb"
+        fname = f"ERA-5_{date_str}_{hour}.grb"
         grib_path = grib_dir / fname
 
         if grib_path.exists() and grib_path.stat().st_size > 0:
