@@ -133,9 +133,8 @@ _MINTPY_TEMPLATE = textwrap.dedent("""\
     mintpy.velocity.startDate          = auto
     mintpy.velocity.endDate            = auto
 
-    ########## geocoding (enabled for proper radar-to-geographic coordinate mapping)
-    mintpy.geocode                     = yes
-    mintpy.geocode.method              = linear
+    ########## geocoding (disabled -- export handles georeferencing via affine approximation)
+    mintpy.geocode                     = no
 """)
 
 

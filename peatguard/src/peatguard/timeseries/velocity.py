@@ -221,11 +221,13 @@ def export_velocity(
     )
     velocity_m_yr *= factor
 
-    # Convert m/yr to mm/yr. Do NOT clamp here -- noisy pixels are handled
-    # by the coherence mask below (threshold 0.5). Clamping extreme values
-    # before masking biases the mean when many pixels are at the clamp bound.
+    # Convert m/yr to mm/yr and clamp extreme outliers from unwrapping errors.
+    # Values beyond [-200, +200] are physically impossible for peatland and
+    # indicate 2pi phase jumps (28mm per cycle for C-band, ~35mm after LOS
+    # conversion). Coherence mask handles moderate noise; clamp handles extremes.
     velocity_mm_yr = velocity_m_yr * 1000.0
     valid_mask = np.isfinite(velocity_mm_yr)
+    velocity_mm_yr[valid_mask] = np.clip(velocity_mm_yr[valid_mask], -200.0, 200.0)
 
     # Read velocity uncertainty if available
     velocity_std = None
