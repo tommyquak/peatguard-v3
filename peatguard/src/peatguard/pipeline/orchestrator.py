@@ -587,19 +587,11 @@ def _merge_burst_geometry(
                 data = data.reshape(-1, width * n_bands)
             arrays.append(data)
 
-        # Merge with overlap trimming
-        if detected_overlaps is not None and len(detected_overlaps) == len(arrays) - 1:
-            overlaps = detected_overlaps
-        elif len(arrays) > 1:
-            overlaps = _estimate_burst_overlaps(arrays)
-            logger.info("Estimated overlaps for %s: %s", geom_name, overlaps)
-        else:
-            overlaps = []
-
-        if overlaps:
-            merged = _merge_burst_arrays_with_overlap(arrays, overlaps)
-        else:
-            merged = np.concatenate(arrays, axis=0) if len(arrays) > 1 else arrays[0]
+        # Simple vertical concatenation (no overlap trimming).
+        # Overlap trimming was attempted but corrupted geometry files,
+        # producing wrong velocity scaling. Simple concatenation matches
+        # the original pipeline that produced correct -26 mm/yr results.
+        merged = np.concatenate(arrays, axis=0) if len(arrays) > 1 else arrays[0]
 
         full_h, full_w_bands = merged.shape
 
