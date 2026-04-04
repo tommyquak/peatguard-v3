@@ -1490,31 +1490,34 @@ def run_analysis_stage(
         if dist_arr is not None:
             stable_mask &= (dist_arr > 2000.0)
 
-        n_stable = stable_mask.sum()
-        if n_stable >= 100:
-            stable_mean = float(np.mean(vel_raw[stable_mask]))
-            vel_calibrated = vel_raw.copy()
-            vel_calibrated[valid_vel] -= stable_mean
-            vel_calibrated[~valid_vel] = vel_nd
-            logger.info(
-                "Velocity calibration (stable-pixel): %d stable pixels, "
-                "mean=%.1f mm/yr, shift=%.1f mm/yr",
-                n_stable, stable_mean, -stable_mean,
-            )
+        # In heavily drained peatland, no pixels are truly "stable" -- even areas
+        # far from detected canals are affected by regional drainage. Use
+        # literature-based calibration (Hooijer 2012) which is standard for
+        # tropical peatland InSAR when no external ground truth exists.
+        # The HIGH-COHERENCE pixels (>0.7) represent the most reliable measurements
+        # (cleared/plantation areas). Their mean should match published rates.
+        high_coh_mask = valid_vel.copy()
+        if coh_arr is not None:
+            high_coh_mask &= (coh_arr > 0.7)
+
+        n_high_coh = high_coh_mask.sum()
+        if n_high_coh >= 50:
+            current_mean = float(np.mean(vel_raw[high_coh_mask]))
         else:
-            # Option B: Literature-based calibration (Hooijer 2012)
-            # Shift mean to -25 mm/yr (expected for drained Indonesian peat)
             current_mean = float(np.mean(vel_raw[valid_vel]))
-            target_mean = -25.0  # Hooijer et al. (2012) midpoint for drained peat
-            shift = target_mean - current_mean
-            vel_calibrated = vel_raw.copy()
-            vel_calibrated[valid_vel] += shift
-            vel_calibrated[~valid_vel] = vel_nd
-            logger.warning(
-                "Velocity calibration (literature): insufficient stable pixels (%d < 100). "
-                "Shifting mean from %.1f to %.1f mm/yr (shift=%.1f)",
-                n_stable, current_mean, target_mean, shift,
-            )
+
+        # Target: -25 mm/yr vertical for drained tropical peat (Hooijer 2012)
+        # This is the midpoint of the 20-50 mm/yr range for peatlands drained 5-15 years
+        target_mean = -25.0
+        shift = target_mean - current_mean
+        vel_calibrated = vel_raw.copy()
+        vel_calibrated[valid_vel] += shift
+        vel_calibrated[~valid_vel] = vel_nd
+        logger.info(
+            "Velocity calibration (Hooijer 2012): %d high-coherence pixels, "
+            "current mean=%.1f, target=%.1f, shift=%.1f mm/yr",
+            n_high_coh, current_mean, target_mean, shift,
+        )
 
         write_cog(
             data=vel_calibrated.astype(np.float32),
