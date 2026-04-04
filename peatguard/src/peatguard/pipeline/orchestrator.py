@@ -1436,6 +1436,109 @@ def run_analysis_stage(
         else:
             logger.info("Water mask disabled in config, skipping")
 
+    # Reference velocity calibration: shift the velocity baseline so that
+    # "stable" pixels (far from canals, high coherence) have ~0 mm/yr.
+    # This compensates for the arbitrary InSAR reference point selection.
+    # Method: Hoyt et al. (2020) stable-pixel approach.
+    calibrated_velocity_path = output_dir / "calibrated_velocity.tif"
+    try:
+        vel_cal_data, vel_cal_meta = read_raster(velocity_path)
+        vel_raw = vel_cal_data[0]
+        vel_nd = vel_cal_meta["nodata"] if vel_cal_meta["nodata"] is not None else -9999.0
+        valid_vel = (vel_raw != vel_nd) & np.isfinite(vel_raw)
+
+        # Read coherence for quality filtering
+        coh_path = output_dir / "coherence_median.tif"
+        if not coh_path.exists():
+            coh_path = output_dir / "coherence_median_utm.tif"
+        coh_arr = None
+        if coh_path.exists():
+            coh_data, _ = read_raster(coh_path)
+            coh_arr = coh_data[0]
+            if coh_arr.shape != vel_raw.shape:
+                coh_arr = None
+            else:
+                del coh_data
+
+        # Read canal distance for identifying stable pixels
+        dist_arr = None
+        if canal_dist_path and canal_dist_path.exists():
+            dist_data, dist_meta = read_raster(canal_dist_path)
+            dist_arr = dist_data[0]
+            # Reproject if needed
+            if dist_arr.shape != vel_raw.shape:
+                import rasterio
+                from rasterio.warp import Resampling, reproject
+                dist_reproj = np.zeros(vel_raw.shape, dtype=np.float32)
+                reproject(
+                    source=dist_arr,
+                    destination=dist_reproj,
+                    src_transform=dist_meta["transform"],
+                    src_crs=dist_meta["crs"],
+                    dst_transform=vel_cal_meta["transform"],
+                    dst_crs=vel_cal_meta["crs"],
+                    resampling=Resampling.bilinear,
+                )
+                dist_arr = dist_reproj
+            del dist_data
+
+        # Option A: Stable-pixel calibration (Hoyt et al. 2020)
+        # Stable pixels: high coherence + far from canals
+        stable_mask = valid_vel.copy()
+        if coh_arr is not None:
+            stable_mask &= (coh_arr > 0.7)
+        if dist_arr is not None:
+            stable_mask &= (dist_arr > 2000.0)
+
+        n_stable = stable_mask.sum()
+        if n_stable >= 100:
+            stable_mean = float(np.mean(vel_raw[stable_mask]))
+            vel_calibrated = vel_raw.copy()
+            vel_calibrated[valid_vel] -= stable_mean
+            vel_calibrated[~valid_vel] = vel_nd
+            logger.info(
+                "Velocity calibration (stable-pixel): %d stable pixels, "
+                "mean=%.1f mm/yr, shift=%.1f mm/yr",
+                n_stable, stable_mean, -stable_mean,
+            )
+        else:
+            # Option B: Literature-based calibration (Hooijer 2012)
+            # Shift mean to -25 mm/yr (expected for drained Indonesian peat)
+            current_mean = float(np.mean(vel_raw[valid_vel]))
+            target_mean = -25.0  # Hooijer et al. (2012) midpoint for drained peat
+            shift = target_mean - current_mean
+            vel_calibrated = vel_raw.copy()
+            vel_calibrated[valid_vel] += shift
+            vel_calibrated[~valid_vel] = vel_nd
+            logger.warning(
+                "Velocity calibration (literature): insufficient stable pixels (%d < 100). "
+                "Shifting mean from %.1f to %.1f mm/yr (shift=%.1f)",
+                n_stable, current_mean, target_mean, shift,
+            )
+
+        write_cog(
+            data=vel_calibrated.astype(np.float32),
+            output_path=calibrated_velocity_path,
+            crs=vel_cal_meta["crs"],
+            transform=vel_cal_meta["transform"],
+            nodata=vel_nd,
+            band_names=["calibrated_velocity_mm_yr"],
+            dtype="float32",
+        )
+        products["calibrated_velocity"] = calibrated_velocity_path
+
+        # Use calibrated velocity for all downstream products
+        velocity_path = calibrated_velocity_path
+        logger.info("Using calibrated velocity for classification and risk scoring")
+
+        del vel_cal_data, vel_raw, vel_calibrated
+        if coh_arr is not None:
+            del coh_arr
+        if dist_arr is not None:
+            del dist_arr
+    except Exception as exc:
+        logger.warning("Velocity calibration failed (non-fatal): %s", exc)
+
     # Subsidence classification (always runs, uses water mask if available)
     class_path = output_dir / "subsidence_class.tif"
     classify_subsidence_file(
