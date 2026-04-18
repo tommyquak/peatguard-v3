@@ -78,6 +78,8 @@ risk_score:
   subsidence_weight: 0.55      # InSAR velocity (direct measurement)
   max_influence_m: 1200.0      # canal influence radius (Hooijer: 1-1.5 km)
   severe_velocity_mm_yr: -40.0 # velocity at max risk (Hooijer: 20-50 mm/yr)
+  coherence_threshold: 0.7     # pixels below this coherence are nodata in
+                               # canal_risk; stricter than processing level
 
 forest_change:
   # Hansen Global Forest Change (Hansen et al. 2013): provides WHEN each

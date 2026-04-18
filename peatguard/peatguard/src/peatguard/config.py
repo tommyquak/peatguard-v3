@@ -197,6 +197,16 @@ class RiskScoreConfig(BaseModel):
             "Hooijer (2012): 20-50 mm/yr in first 5 years of drainage."
         ),
     )
+    coherence_threshold: float = Field(
+        default=0.7,
+        description=(
+            "Risk-specific coherence cutoff: pixels below this value are "
+            "excluded from the canal_risk product. Stricter than "
+            "processing.coherence_threshold (which gates SBAS inversion "
+            "quality), because the risk map is a decision-support product "
+            "that should not show confident reds on unreliable phase."
+        ),
+    )
 
 
 class FusionConfig(BaseModel):

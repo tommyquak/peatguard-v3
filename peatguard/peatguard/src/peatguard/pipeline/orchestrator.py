@@ -1174,6 +1174,7 @@ def generate_quality_report(
         "reference_point_lalo": config.mintpy.reference_lalo,
         "tropospheric_correction": config.mintpy.tropospheric_correction,
         "coherence_threshold": config.processing.coherence_threshold,
+        "risk_coherence_threshold": config.risk_score.coherence_threshold,
         "fusion_enabled": config.fusion.enabled,
         "water_mask_enabled": config.water_mask.enabled,
         "peat_mask_enabled": config.peat_mask.enabled,
@@ -1341,6 +1342,7 @@ def generate_quality_report(
             else "MintPy auto-selected"
         ),
         "coherence_threshold": config.processing.coherence_threshold,
+        "risk_coherence_threshold": config.risk_score.coherence_threshold,
     }
 
     # -- Data quality summary --
@@ -1737,8 +1739,14 @@ def run_analysis_stage(
 
         risk_path = output_dir / "canal_risk.tif"
         risk_cfg = config.risk_score
-        # Pass coherence for quality filtering (matches carbon_loss approach)
+        # Pass coherence for quality filtering (matches carbon_loss approach).
+        # vel_for_risk may be UTM (when reprojected for distance alignment),
+        # so fall back to the UTM coherence product when the native-grid
+        # coherence is missing -- otherwise the shape check in
+        # generate_risk_map silently skips the filter.
         coh_for_risk = output_dir / "coherence_median.tif"
+        if not coh_for_risk.exists():
+            coh_for_risk = output_dir / "coherence_median_utm.tif"
         if not coh_for_risk.exists():
             coh_for_risk = None
         generate_risk_map(
@@ -1749,7 +1757,7 @@ def run_analysis_stage(
             severe_velocity_mm_yr=risk_cfg.severe_velocity_mm_yr,
             water_mask_path=water_mask_path,
             coherence_path=coh_for_risk,
-            coherence_threshold=0.7,
+            coherence_threshold=risk_cfg.coherence_threshold,
         )
         products["canal_risk"] = risk_path
 

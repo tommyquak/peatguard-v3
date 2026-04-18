@@ -191,8 +191,10 @@ def generate_risk_map(
         subsidence_weight,
     )
 
-    # Mark nodata pixels
-    invalid = (velocity == nodata) | ~np.isfinite(velocity)
+    # Mark nodata pixels. Rebuild from the running `valid` mask so the
+    # coherence filter applied above is preserved -- otherwise low-coherence
+    # pixels would still receive a proximity-only combined risk.
+    invalid = ~valid
 
     # Exclude water pixels from risk score
     if water_mask_path is not None and water_mask_path.exists():
