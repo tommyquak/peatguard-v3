@@ -1,0 +1,52 @@
+version: "3.8"
+
+services:
+  peatguard:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - ./data:/workspace/data
+      - ./output:/workspace/output
+      - ./config:/workspace/config
+      - ${HOME}/.netrc:/root/.netrc:ro
+      - ${HOME}/.cdsapirc:/root/.cdsapirc:ro
+    environment:
+      - PEATGUARD_STORAGE__OUTPUT_DIR=/workspace/output
+      - PEATGUARD_STORAGE__SCRATCH_DIR=/workspace/scratch
+      - PEATGUARD_STORAGE__CATALOG_DB=/workspace/catalog.db
+      # CDS API for ERA5 tropospheric correction (alternative to ~/.cdsapirc mount)
+      # - CDS_API_URL=https://cds.climate.copernicus.eu/api
+      # - CDS_API_KEY=your-key-here
+    working_dir: /workspace
+    entrypoint: ["/entrypoint.sh", "peatguard"]
+    command: ["--help"]
+
+  jupyter:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - ./data:/workspace/data
+      - ./output:/workspace/output
+      - ./config:/workspace/config
+      - ./notebooks:/workspace/notebooks
+      - ${HOME}/.netrc:/root/.netrc:ro
+      - ${HOME}/.cdsapirc:/root/.cdsapirc:ro
+    ports:
+      - "8888:8888"
+    environment:
+      - PEATGUARD_STORAGE__OUTPUT_DIR=/workspace/output
+      - PEATGUARD_STORAGE__SCRATCH_DIR=/workspace/scratch
+    entrypoint: ["/entrypoint.sh", "jupyter", "lab"]
+    command: ["--ip=0.0.0.0", "--port=8888", "--no-browser", "--allow-root"]
+
+  dashboard:
+    build:
+      context: .
+      dockerfile: cloud/Dockerfile.dashboard
+    ports:
+      - "8080:8080"
+    environment:
+      - PEATGUARD_STORAGE__GCS_BUCKET=peatguard-data
+      - PEATGUARD_GCS_PREFIX=products

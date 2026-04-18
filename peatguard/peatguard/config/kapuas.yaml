@@ -1,0 +1,13 @@
+# Kapuas AOI override
+# Extends default.yaml for the Kapuas River pilot site
+
+aoi:
+  bbox: [114.304, -2.611, 114.404, -2.511]
+  epsg: 32649
+
+sentinel1:
+  subswath: IW2
+  min_temporal_gap_days: 14
+
+mintpy:
+  reference_lalo: [-2.496900, 114.312148]

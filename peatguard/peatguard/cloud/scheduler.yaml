@@ -1,0 +1,33 @@
+# Cloud Scheduler configuration for PeatGuard monthly reprocessing.
+#
+# Triggers the Cloud Workflow (not individual jobs) on the 1st of each month
+# at 06:00 WIB (Asia/Jakarta). The workflow orchestrates all 5 pipeline stages
+# sequentially, with InSAR and backscatter running in parallel.
+#
+# Sentinel-1 has a 12-day repeat cycle, so monthly processing captures
+# 2-3 new acquisitions per cycle. Running on the 1st ensures the previous
+# month's data has been fully ingested by ESA/ASF.
+#
+# Deploy with: cloud/scheduler-setup.sh
+# Disable with: gcloud scheduler jobs pause peatguard-monthly-trigger ...
+# Re-enable:    gcloud scheduler jobs resume peatguard-monthly-trigger ...
+
+# -- Monthly pipeline trigger (recommended) --
+# Triggers the full workflow on the 1st of each month.
+name: peatguard-monthly-trigger
+schedule: "0 6 1 * *"
+timeZone: "Asia/Jakarta"
+description: "Trigger PeatGuard full pipeline workflow on the 1st of each month at 06:00 WIB"
+httpTarget:
+  uri: "https://workflowexecutions.googleapis.com/v1/projects/peatguard/locations/asia-southeast1/workflows/peatguard-monthly/executions"
+  httpMethod: POST
+  body: "{}"
+  headers:
+    Content-Type: "application/json"
+  oauthToken:
+    serviceAccountEmail: "peatguard-sa@peatguard.iam.gserviceaccount.com"
+    scope: "https://www.googleapis.com/auth/cloud-platform"
+retryConfig:
+  retryCount: 1
+  minBackoffDuration: "60s"
+  maxBackoffDuration: "300s"

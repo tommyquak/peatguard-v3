@@ -1,0 +1,20 @@
+wing: peatguard
+rooms:
+- name: peatguard
+  description: Files from peatguard/
+- name: datasets
+  description: Files from Datasets/
+- name: local_pipeline
+  description: Files from local_pipeline/
+- name: peatguard_v2
+  description: Files from peatguard-v2/
+- name: peatguard_remote
+  description: Files from PeatGuard remote/
+- name: testing
+  description: Files from tests/
+- name: scripts
+  description: Files from scripts/
+- name: configuration
+  description: Files from config/
+- name: general
+  description: Files that don't fit other rooms

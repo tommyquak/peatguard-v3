@@ -1,0 +1,131 @@
+# PeatGuard Pipeline Configuration
+# Default settings for peatland monitoring
+
+# Sensor selection: "sentinel1" (C-band TOPS) or "nisar" (L-band stripmap)
+sensor: sentinel1
+
+aoi:
+  # Teluk Bayur Village, West Kalimantan, Indonesia (from pitch deck)
+  # Center: -2.561, 114.354 -- 17x11km scan area
+  bbox: [114.277, -2.611, 114.431, -2.511]  # [west, south, east, north]
+  epsg: 32649  # UTM Zone 49S (108-114 deg E, southern hemisphere)
+
+sentinel1:
+  platform: SENTINEL-1
+  polarization: VV
+  subswath: IW3
+  processing_level_slc: SLC
+  processing_level_grd: GRD_HD
+  beam_mode: IW
+  min_temporal_gap_days: 14
+  max_temporal_baseline_days: 48
+
+nisar:
+  platform: NISAR
+  polarization: HH
+  beam_mode: ALOS
+  processing_level: SLC
+  min_temporal_gap_days: 12     # NISAR 12-day repeat cycle
+  max_temporal_baseline_days: 48
+  wavelength_m: 0.2384          # L-band, 24cm
+  orbit_height_m: 747000.0
+  range_pixel_size_m: 7.5
+  azimuth_pixel_size_m: 6.0
+  incidence_deg: 33.9
+
+processing:
+  resolution_m: 10.0
+  coherence_threshold: 0.3
+  wavelength_m: 0.056
+  incidence_deg: 37.0
+  dem_source: SRTM  # SRTM 1-arc-second
+  speckle_filter: lee_sigma
+  speckle_window_size: 7
+  goldstein_alpha: 0.8
+  snaphu_cost_mode: DEFO
+  do_ion: true  # Ionospheric correction (split-spectrum); critical for equatorial regions
+
+classification:
+  # Subsidence velocity thresholds (mm/yr)
+  # Natural peat accumulation ~1 mm/yr; below -5 mm/yr = net carbon loss
+  severe_threshold: -50.0
+  active_drying_threshold: -20.0
+  moderate_drying_threshold: -5.0
+  stable_threshold: 5.0
+
+water_mask:
+  # Water body detection from VV backscatter to prevent false subsidence
+  # detections over open water. Water produces specular reflection
+  # (very low backscatter) that mimics low InSAR coherence.
+  enabled: true
+  vv_threshold_db: -18.0       # dB threshold; catches river and major water bodies
+  min_water_size_pixels: 25    # min connected component size (25 px @ 10m = 2500 sq m)
+  closing_radius: 3            # morphological closing radius (fills small gaps)
+  exclude_canals: false        # disabled: canal mask too broad (19.8%) removes all water
+
+peat_mask:
+  # Peat extent mapping from WRI/GFW Indonesia Peatlands dataset.
+  # Downloads peat polygons, rasterizes to pipeline grid, estimates depth
+  # from distance-to-edge (dome model, Page et al. 2006).
+  enabled: true
+  shallow_edge_m: 500.0      # < 500m from peat edge = shallow (< 2m est.)
+  moderate_edge_m: 1500.0    # 500-1500m = moderate (2-4m est.); > 1500m = deep (> 4m est.)
+
+risk_score:
+  # Calibrated to Hooijer et al. (2012) water table-subsidence relationship
+  # and Dupuit equation approximation for canal drainage influence
+  proximity_weight: 0.45       # canal proximity (indirect proxy)
+  subsidence_weight: 0.55      # InSAR velocity (direct measurement)
+  max_influence_m: 1200.0      # canal influence radius (Hooijer: 1-1.5 km)
+  severe_velocity_mm_yr: -40.0 # velocity at max risk (Hooijer: 20-50 mm/yr)
+
+forest_change:
+  # Hansen Global Forest Change (Hansen et al. 2013): provides WHEN each
+  # area was cleared, which directly relates to peat subsidence rate via
+  # Hooijer et al. (2012) time-since-drainage relationship.
+  # Data: 30m resolution, free, no authentication required.
+  enabled: true
+  reference_year: 2024               # match InSAR observation period
+  hansen_version: "GFC-2023-v1.11"   # latest version as of 2024
+
+fusion:
+  # Multi-sensor fusion: combine C-band (Sentinel-1) and L-band (NISAR)
+  # velocity maps using coherence-weighted averaging. Only runs when both
+  # sensor products are available (e.g., after running separate sentinel1
+  # and nisar pipeline passes).
+  enabled: false                   # enable when NISAR L-band data is available for AOI
+  c_band_weight_boost: 1.0        # multiplicative boost for C-band weight (1.0 = no boost)
+  min_coherence: 0.3              # minimum coherence for a sensor to contribute
+
+validation:
+  # Cross-validation: correlate InSAR velocity with independent datasets
+  # to provide evidence that the subsidence signal is real.
+  enabled: true
+  attempt_ndvi_download: true     # try Sentinel-2 NDVI from Planetary Computer
+  ndvi_max_cloud_cover: 30        # max cloud cover for S2 scene selection
+  ndvi_max_scenes: 20             # max scenes for NDVI composite
+  coherence_threshold: 0.5        # cleared vs forested zonal split
+
+export:
+  cog_blocksize: 512
+  cog_compression: DEFLATE
+  overview_levels: [2, 4, 8, 16]
+  nodata: -9999.0
+
+storage:
+  # Local paths (overridden by environment variables for cloud)
+  output_dir: ./output
+  scratch_dir: ./scratch
+  catalog_db: ./catalog.db
+  # GCS settings
+  gcs_bucket: ""
+  gcs_prefix: peatguard-data
+
+mintpy:
+  reference_lalo: []  # Auto-select highest-coherence pixel within data extent
+  reference_min_coherence: 0.7
+  tropospheric_correction: pyaps  # ERA5 via PyAPS (requires CDS API key)
+  unwrap_error_correction: "no"  # bridging fails with fragmented conncomps; MCF handles most errors
+  network_modification:
+    coherence_based: true
+    min_coherence: 0.3

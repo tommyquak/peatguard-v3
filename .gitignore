@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Node
+node_modules/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors / IDE
+.idea/
+.vscode/
+*.swp
+
+# Claude Code session state
+.claude/
+
+# Large local datasets and pipeline outputs (regenerated)
+Datasets/
+local_pipeline/
+peatguard-v2/
+
+# Legacy nested repo (kept for reference, not tracked here)
+peatguard/.git/
+peatguard/.pytest_cache/
+peatguard/.venv/
+
+# Local artifacts
+catalog.db
+scratch/
+output/
+*.log

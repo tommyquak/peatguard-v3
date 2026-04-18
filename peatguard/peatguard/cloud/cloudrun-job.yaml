@@ -1,0 +1,156 @@
+# Cloud Run Job definitions for PeatGuard pipeline stages
+# Each stage runs as a separate Cloud Run Job for independent scaling
+
+# -- Ingest Job: Search and download new Sentinel-1 acquisitions --
+apiVersion: run.googleapis.com/v1
+kind: Job
+metadata:
+  name: peatguard-ingest
+  labels:
+    app: peatguard
+    stage: ingest
+spec:
+  template:
+    spec:
+      template:
+        spec:
+          containers:
+            - image: asia-southeast1-docker.pkg.dev/PROJECT_ID/peatguard/pipeline:latest
+              command: ["peatguard"]
+              args: ["download", "--start", "$(START_DATE)", "--end", "$(END_DATE)", "--level", "SLC"]
+              resources:
+                limits:
+                  cpu: "2"
+                  memory: 8Gi
+              env:
+                - name: PEATGUARD_STORAGE__GCS_BUCKET
+                  value: peatguard-data
+                - name: PEATGUARD_STORAGE_OUTPUT_DIR
+                  value: /workspace/output
+          timeoutSeconds: 7200
+          serviceAccountName: peatguard-sa@PROJECT_ID.iam.gserviceaccount.com
+
+---
+# -- InSAR Processing Job: Process interferogram pairs --
+apiVersion: run.googleapis.com/v1
+kind: Job
+metadata:
+  name: peatguard-insar
+  labels:
+    app: peatguard
+    stage: insar
+spec:
+  template:
+    spec:
+      parallelism: 4
+      taskCount: 12
+      template:
+        spec:
+          containers:
+            - image: asia-southeast1-docker.pkg.dev/PROJECT_ID/peatguard/pipeline:latest
+              command: ["peatguard"]
+              args: ["process", "--mode", "insar", "--workers", "1"]
+              resources:
+                limits:
+                  cpu: "4"
+                  memory: 16Gi
+              env:
+                - name: PEATGUARD_STORAGE_GCS_BUCKET
+                  value: peatguard-data
+          timeoutSeconds: 3600
+          serviceAccountName: peatguard-sa@PROJECT_ID.iam.gserviceaccount.com
+
+---
+# -- Backscatter Job: GRD calibration, speckle filter, terrain correction, composite --
+apiVersion: run.googleapis.com/v1
+kind: Job
+metadata:
+  name: peatguard-backscatter
+  labels:
+    app: peatguard
+    stage: backscatter
+spec:
+  template:
+    spec:
+      template:
+        spec:
+          containers:
+            - image: asia-southeast1-docker.pkg.dev/PROJECT_ID/peatguard/pipeline:latest
+              command: ["peatguard"]
+              args: ["process", "--mode", "backscatter"]
+              resources:
+                limits:
+                  cpu: "8"
+                  memory: 32Gi
+              env:
+                - name: PEATGUARD_STORAGE__GCS_BUCKET
+                  value: peatguard-data
+          timeoutSeconds: 7200
+          serviceAccountName: peatguard-sa@PROJECT_ID.iam.gserviceaccount.com
+
+---
+# -- Time-Series Job: MintPy SBAS inversion --
+apiVersion: run.googleapis.com/v1
+kind: Job
+metadata:
+  name: peatguard-timeseries
+  labels:
+    app: peatguard
+    stage: timeseries
+spec:
+  template:
+    spec:
+      template:
+        spec:
+          containers:
+            - image: asia-southeast1-docker.pkg.dev/PROJECT_ID/peatguard/pipeline:latest
+              command: ["peatguard"]
+              args: ["timeseries"]
+              resources:
+                limits:
+                  cpu: "4"
+                  memory: 16Gi
+              env:
+                - name: PEATGUARD_STORAGE_GCS_BUCKET
+                  value: peatguard-data
+                # CDS API credentials for ERA5 tropospheric correction.
+                # In production, use Secret Manager references instead of
+                # plain-text values:
+                #   valueFrom:
+                #     secretKeyRef:
+                #       name: cds-api-key
+                #       key: latest
+                - name: CDS_API_URL
+                  value: https://cds.climate.copernicus.eu/api
+                - name: CDS_API_KEY
+                  value: REPLACE_WITH_SECRET_MANAGER_REF
+          timeoutSeconds: 3600
+          serviceAccountName: peatguard-sa@PROJECT_ID.iam.gserviceaccount.com
+
+---
+# -- Analysis Job: Canal detection + classification + risk scoring --
+apiVersion: run.googleapis.com/v1
+kind: Job
+metadata:
+  name: peatguard-analyze
+  labels:
+    app: peatguard
+    stage: analyze
+spec:
+  template:
+    spec:
+      template:
+        spec:
+          containers:
+            - image: asia-southeast1-docker.pkg.dev/PROJECT_ID/peatguard/pipeline:latest
+              command: ["peatguard"]
+              args: ["analyze"]
+              resources:
+                limits:
+                  cpu: "2"
+                  memory: 8Gi
+              env:
+                - name: PEATGUARD_STORAGE_GCS_BUCKET
+                  value: peatguard-data
+          timeoutSeconds: 1800
+          serviceAccountName: peatguard-sa@PROJECT_ID.iam.gserviceaccount.com
