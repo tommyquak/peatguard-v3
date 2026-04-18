@@ -304,6 +304,73 @@ def run_insar_stage(
         logger.info("Uploaded %d files for %s to gs://%s/%s",
                      uploaded, pair_id, config.storage.gcs_bucket, gcs_prefix)
 
+    def _consolidate_pair_local(pair_id: str, pair_dir: Path) -> None:
+        """Copy per-pair merged outputs into the shared MintPy layout.
+
+        Required in local mode (no GCS) so that when pre-cleanup deletes the
+        per-pair directory, stage 3 can still find
+        `scratch/insar/merged/interferograms/{YYYYMMDD_YYYYMMDD}/*`.
+        Mirrors what `_download_interferograms_from_gcs` produces in GCS mode.
+        """
+        if config.storage.gcs_bucket:
+            return
+        merged_src = pair_dir / "merged"
+        if not merged_src.exists():
+            logger.warning("No merged/ dir for %s; skipping local consolidation", pair_id)
+            return
+
+        mintpy_pair_id = pair_id.replace("-", "")
+        insar_root = config.storage.scratch_dir / "insar"
+        ifg_root = insar_root / "merged" / "interferograms"
+        geom_root = insar_root / "merged" / "geom_reference"
+        ifg_root.mkdir(parents=True, exist_ok=True)
+        geom_root.mkdir(parents=True, exist_ok=True)
+
+        pair_dst = ifg_root / mintpy_pair_id
+        pair_dst.mkdir(parents=True, exist_ok=True)
+
+        copied = 0
+        for src in merged_src.iterdir():
+            if src.name == "geom_reference":
+                continue
+            dst = pair_dst / src.name
+            if dst.exists():
+                continue
+            try:
+                if src.is_file():
+                    shutil.copy2(str(src), str(dst))
+                    copied += 1
+                elif src.is_dir():
+                    shutil.copytree(str(src), str(dst), dirs_exist_ok=True)
+            except Exception as exc:
+                logger.warning("Failed to consolidate %s: %s", src.name, exc)
+
+        # MintPy expects los.rdr in geom_reference too
+        los_src = pair_dst / "los.rdr"
+        los_dst = geom_root / "los.rdr"
+        if los_src.exists() and not los_dst.exists():
+            shutil.copy2(str(los_src), str(los_dst))
+            los_xml = pair_dst / "los.rdr.xml"
+            if los_xml.exists():
+                shutil.copy2(str(los_xml), str(geom_root / "los.rdr.xml"))
+
+        # Populate geom_reference once from the first pair that has it
+        geom_src = merged_src / "geom_reference"
+        if geom_src.exists() and not any(geom_root.iterdir()):
+            for item in geom_src.iterdir():
+                dst = geom_root / item.name
+                try:
+                    if item.is_file():
+                        shutil.copy2(str(item), str(dst))
+                    elif item.is_dir():
+                        shutil.copytree(str(item), str(dst), dirs_exist_ok=True)
+                except Exception as exc:
+                    logger.warning("Failed to consolidate geom %s: %s", item.name, exc)
+            logger.info("Consolidated reference geometry from pair %s", pair_id)
+
+        logger.info("Local consolidation: %s -> %s (%d files)",
+                    pair_id, pair_dst, copied)
+
     # Check GCS for already-completed pairs (enables resume after timeout/restart).
     # A pair is considered complete if its unwrapped phase exists in GCS.
     already_done = set()
@@ -401,6 +468,10 @@ def run_insar_stage(
 
             # Upload merged outputs to GCS immediately after success
             _upload_pair_to_gcs(pair.pair_id, work_dir)
+            # Local-mode consolidation: GCS upload is a no-op without a bucket,
+            # so copy per-pair merged/ into the shared MintPy layout before
+            # the next iteration's pre-cleanup wipes this directory.
+            _consolidate_pair_local(pair.pair_id, work_dir)
             completed_pair_ids.append(pair.pair_id)
             work_dirs.append(work_dir)
 

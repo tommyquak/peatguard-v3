@@ -133,8 +133,13 @@ _MINTPY_TEMPLATE = textwrap.dedent("""\
     mintpy.velocity.startDate          = auto
     mintpy.velocity.endDate            = auto
 
-    ########## geocoding (disabled -- export handles georeferencing via affine approximation)
-    mintpy.geocode                     = no
+    ########## geocoding
+    ## Enabled so MintPy resamples to true geographic coordinates using the
+    ## lat.rdr/lon.rdr lookup tables. Leaving this off forced the downstream
+    ## export to fall back to an affine approximation with ~1-3 km georef
+    ## error, which is larger than the 1200 m canal-influence radius.
+    mintpy.geocode                     = yes
+    mintpy.geocode.laloStep            = -0.00009, 0.00009
 """)
 
 
@@ -416,7 +421,7 @@ def generate_mintpy_config(
             "    ## Fixed reference point from two-phase ERA5 selection (pixel coords)\n"
             f"    mintpy.reference.yx         = {ref_y}, {ref_x}\n"
             f"    mintpy.reference.minCoherence = {config.mintpy.reference_min_coherence}\n"
-            "    mintpy.reference.maskFile    = no"
+            "    mintpy.reference.maskFile    = auto"
         )
         logger.info(
             "Using locked reference point from phase 1: Y=%d, X=%d",
@@ -428,7 +433,7 @@ def generate_mintpy_config(
             "    ## Fixed reference point on stable ground (configured in YAML)\n"
             f"    mintpy.reference.lalo       = {ref_lalo[0]}, {ref_lalo[1]}\n"
             f"    mintpy.reference.minCoherence = {config.mintpy.reference_min_coherence}\n"
-            "    mintpy.reference.maskFile    = no"
+            "    mintpy.reference.maskFile    = auto"
         )
         logger.info(
             "Using fixed reference point: lat=%.6f, lon=%.6f",
