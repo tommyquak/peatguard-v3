@@ -112,6 +112,8 @@ def generate_risk_map(
     max_influence_m: float = 1200.0,
     severe_velocity_mm_yr: float = -40.0,
     water_mask_path: Optional[Path] = None,
+    coherence_path: Optional[Path] = None,
+    coherence_threshold: float = 0.7,
 ) -> Path:
     """Generate a combined risk score map from velocity and distance rasters.
 
@@ -155,6 +157,27 @@ def generate_risk_map(
     vel_smoothed = median_filter(vel_smoothed, size=9).astype(np.float32)
     vel_smoothed[~valid] = nodata  # restore nodata
     logger.info("Applied 9x9 median filter to velocity before risk scoring")
+
+    # Coherence filter: exclude low-coherence pixels that produce noisy risk.
+    # Matches the coherence filtering used in carbon_loss for consistency.
+    if coherence_path is not None and coherence_path.exists():
+        coh_data, coh_meta = read_raster(coherence_path)
+        coh = coh_data[0]
+        if coh.shape == velocity.shape:
+            low_coh = coh < coherence_threshold
+            valid[low_coh] = False
+            vel_smoothed[low_coh] = nodata
+            logger.info(
+                "Risk coherence filter: %d pixels excluded (coh < %.1f)",
+                int(low_coh.sum()), coherence_threshold,
+            )
+            del low_coh
+        else:
+            logger.warning(
+                "Coherence shape %s != velocity shape %s, skipping filter",
+                coh.shape, velocity.shape,
+            )
+        del coh_data, coh
 
     proximity_risk = compute_proximity_risk(distance, max_influence_m)
     subsidence_risk = compute_subsidence_risk(

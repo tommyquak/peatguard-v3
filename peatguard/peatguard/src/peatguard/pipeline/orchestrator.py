@@ -175,11 +175,22 @@ def run_insar_stage(
                         len(extract_members), len(members), len(skip_vh))
             zf.extractall(str(local_safe_dir), members=extract_members)
 
-        # Delete the ZIP immediately after extraction to free disk/RAM
-        # (Cloud Run filesystem is RAM-backed, so this is critical)
-        if zip_path.exists():
-            logger.info("  Removing ZIP to free memory: %s (%.1f GB)", zip_path.name, zip_path.stat().st_size / (1024**3))
-            zip_path.unlink()
+        # Delete the ZIP immediately after extraction to free disk/RAM.
+        # On Cloud Run the filesystem is RAM-backed, so this is critical.
+        # In local mode the SLC dir is the authoritative (often read-only)
+        # copy, so skip deletion when no GCS bucket is configured.
+        if config.storage.gcs_bucket and zip_path.exists():
+            try:
+                logger.info(
+                    "  Removing ZIP to free memory: %s (%.1f GB)",
+                    zip_path.name, zip_path.stat().st_size / (1024**3),
+                )
+                zip_path.unlink()
+            except OSError as exc:
+                logger.warning(
+                    "  Could not remove ZIP %s (%s) -- skipping",
+                    zip_path.name, exc,
+                )
 
         logger.info("  Extracted: %s", safe_name)
         return local_safe
@@ -341,12 +352,24 @@ def run_insar_stage(
                 shutil.rmtree(str(prev_dir), ignore_errors=True)
                 logger.info("  Pre-cleanup: deleted entire %s directory", prev_id)
 
-        # Also remove any stale ZIP files that weren't cleaned up
-        slc_dir = config.storage.scratch_dir / "raw" / "slc"
-        if slc_dir.exists():
-            for zip_file in slc_dir.glob("*.zip"):
-                logger.info("  Pre-cleanup: removing stale ZIP %s", zip_file.name)
-                zip_file.unlink(missing_ok=True)
+        # Also remove any stale ZIP files that weren't cleaned up.
+        # Only do this when a GCS bucket is configured -- in that mode ZIPs can
+        # be re-fetched on demand, so we aggressively reclaim disk space on
+        # Cloud Run. In local mode the ZIPs are the only copy (often on a
+        # read-only mount), so deleting them would break subsequent pairs and
+        # crash with OSError on read-only filesystems.
+        if config.storage.gcs_bucket:
+            slc_dir = config.storage.scratch_dir / "raw" / "slc"
+            if slc_dir.exists():
+                for zip_file in slc_dir.glob("*.zip"):
+                    logger.info("  Pre-cleanup: removing stale ZIP %s", zip_file.name)
+                    try:
+                        zip_file.unlink(missing_ok=True)
+                    except OSError as exc:
+                        logger.warning(
+                            "  Pre-cleanup: could not remove %s (%s) -- skipping",
+                            zip_file.name, exc,
+                        )
 
         # Extract and process
         ref_path = _ensure_safe_extracted(date_to_zip[pair.reference_date])
@@ -1714,6 +1737,10 @@ def run_analysis_stage(
 
         risk_path = output_dir / "canal_risk.tif"
         risk_cfg = config.risk_score
+        # Pass coherence for quality filtering (matches carbon_loss approach)
+        coh_for_risk = output_dir / "coherence_median.tif"
+        if not coh_for_risk.exists():
+            coh_for_risk = None
         generate_risk_map(
             vel_for_risk, canal_dist_path, risk_path,
             proximity_weight=risk_cfg.proximity_weight,
@@ -1721,6 +1748,8 @@ def run_analysis_stage(
             max_influence_m=risk_cfg.max_influence_m,
             severe_velocity_mm_yr=risk_cfg.severe_velocity_mm_yr,
             water_mask_path=water_mask_path,
+            coherence_path=coh_for_risk,
+            coherence_threshold=0.7,
         )
         products["canal_risk"] = risk_path
 

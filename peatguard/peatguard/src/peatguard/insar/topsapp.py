@@ -174,7 +174,7 @@ _TOPSAPP_XML_TEMPLATE = textwrap.dedent("""\
             {dem_property}
             <property name="do unwrap">{do_unwrap_str}</property>
             <property name="unwrapper name">snaphu_mcf</property>
-            <property name="do ESD">True</property>
+            <property name="do ESD">False</property>
             <property name="azimuth looks">{az_looks}</property>
             <property name="range looks">{rg_looks}</property>
             <property name="filter strength">{filter_strength}</property>
