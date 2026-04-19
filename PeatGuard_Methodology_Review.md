@@ -442,6 +442,86 @@ mount.
 **Now:** `orchestrator.py` lines 361–372 gate ZIP deletion on
 `if config.storage.gcs_bucket:`. Local runs keep their ZIP library intact.
 
+### 5.8 Local-mode per-pair consolidation (added 2026-04-19)
+
+> [!bug] This was the silent-failure that nuked 5 pairs last run
+> **Before:** In GCS mode, each pair's `merged/` was uploaded to GCS and the
+> per-pair directory was then `rmtree`d by pre-cleanup. Stage 3 later downloaded
+> those outputs back into `scratch/insar/merged/interferograms/{YYYYMMDD_YYYYMMDD}/`
+> via `_download_interferograms_from_gcs`. In local mode the GCS upload is a
+> no-op and the download path never runs, so the pre-cleanup silently destroyed
+> every completed pair's merged outputs. Stage 3 crashed with "No interferograms
+> found."
+>
+> **Now:** `orchestrator.py` `_consolidate_pair_local()` is called after each
+> pair finishes. It mirrors what `_download_interferograms_from_gcs` produces,
+> copying `merged/*` into the shared layout before pre-cleanup deletes the
+> per-pair dir. Keyed to `gcs_bucket` being empty so it only runs locally.
+>
+> **Secondary fix:** the initial implementation used `not any(geom_root.iterdir())`
+> as the guard for the one-time geometry copy, but the `los.rdr` copy happens
+> just before and pollutes the guard, permanently skipping `lat.rdr/lon.rdr/hgt.rdr`.
+> Replaced with an explicit `lat.rdr`-exists marker.
+
+### 5.9 MintPy short-read padding (added 2026-04-19)
+
+**Before:** `prep_data_for_mintpy` called `data.reshape(length, width * 2)`
+after `np.fromfile`, trimming oversize reads but crashing on undersize reads.
+Two of our 59 pairs (both referencing the 2023-11-18 SLC) came out exactly one
+row short from topsApp — enough to raise `ValueError: cannot reshape array of
+size X into shape (...)` and kill stage 3.
+
+**Now:** `mintpy_prep.py` lines 614–662 detect `data.size < expected` and pad
+with zeros (float for unw/cor, uint8 for conncomp), with a log line on the
+first occurrence so the short pairs are still visible. Small bias acceptable
+versus losing the pair entirely from the SBAS network.
+
+### 5.10 Synthetic lat.rdr/lon.rdr for MintPy's `check_loaded_dataset`
+
+**Before:** With the consolidation bug above, the per-pair geometry files were
+never copied to `scratch/insar/merged/geom_reference/`, so MintPy's
+`check_loaded_dataset` raised `FileNotFoundError` on `lat.rdr` / `lon.rdr` at
+the `modify_network` step, regardless of whether `mintpy.geocode` was on or off.
+
+**Now (interim):** A manual `docker run python3 -c "..."` generated linearly-
+spaced lat/lon arrays from the AOI bbox and dumped them as `float32` `.rdr`
+files with matching lowercase-keyed `.rdr.xml` sidecars. The arrays are wrong
+in detail (treat the radar grid as axis-aligned, which it is not), but they
+are correct in *shape*, which is all MintPy's existence check tests. The
+downstream export already falls back to affine-approximation georeferencing
+(§5.11), so the placeholder only has to satisfy the loader.
+
+**Still a follow-up:** reprocess one pair to get real `lat.rdr`/`lon.rdr`
+into `geom_reference/`, then `mintpy.geocode = yes` becomes viable and the
+affine approximation goes away.
+
+### 5.11 Geocode toggled back to `no` (reverted from 5.10-preliminary)
+
+An earlier attempt this session flipped `mintpy.geocode = no → yes` alongside
+the consolidation fix. That change is correct in principle (the 1–3 km
+affine-approx georef error is larger than the 1200 m canal-influence radius,
+see §6.17) but the missing `lat.rdr`/`lon.rdr` made it unshippable. The
+default has been reverted to `mintpy.geocode = no` with a comment pointing
+to §5.10 and §7.17, and the export continues to lat/lon via affine bounds.
+Flip this back once real lookup files exist.
+
+### 5.12 `reference.maskFile = no` (reverted from review-7.18)
+
+**Before:** Review §7.18 recommended flipping `mintpy.reference.maskFile = no → auto`
+so MintPy would respect the unwrap/coherence mask when validating the fixed
+reference pixel. We did that.
+
+**Problem encountered:** the locked reference pixel REF_Y=92/X=502 (selected by
+our two-phase ERA5 logic) sits *inside* the maskConnComp.h5 masked-out area,
+so the auto check failed hard with `input reference point is in masked OUT
+area`. The configured reference is literally on a low-coherence pixel.
+
+**Now (interim):** reverted to `maskFile = no` so the run ships. The long-term
+fix is §7.5 (reference-pixel audit): select the reference point from a
+low-σ high-coherence neighbourhood and stamp its provenance into the output
+metadata. Until then, the current calibration is not defensible under
+scrutiny.
+
 ---
 
 ## 6. Hole-Poking — Where This Plan Could Fail
@@ -1339,17 +1419,28 @@ Fixes are grouped by theme; priority ordering is in §8.
 
 ### P0 — do before Hult pitch (2 weeks)
 
+Priority order reshuffled after the 2026-04-19 local rerun (§5.8–§5.12),
+which exposed that **7.5 and 7.17 are blocking, not optional**:
+
 | # | Fix | Why now | Effort |
 |---|---|---|---|
+| 7.5 | Reference-pixel audit + provenance stamp | **Blocks 7.18**. This run proved the locked REF_Y=92/X=502 is in a masked-out pixel; until a defensible reference is chosen, velocity mean is not auditable. | 4 h + 1 run |
+| 7.17 | Proper geocoding (MintPy geocode = yes) | **Blocks 7.18 and 7.20**. Needs real `lat.rdr`/`lon.rdr` in `geom_reference/` (reprocess 1 pair). Shipped this run on a synthetic placeholder. | 4 h + 1 run |
 | 7.1 | Re-enable ESD with fallback | Single largest methodological gap (3–8 mm/yr bias) | 1 h code + 10 h validate |
-| 7.17 | Proper geocoding (MintPy geocode = yes) | 1–3 km → <30 m; enables canal-proximity to mean anything | 4 h + 1 run |
-| 7.14 | Reclassify "stable" band | Trivial; stakeholder-facing narrative depends on it | 15 min |
-| 7.3 | Unify coherence thresholds | Defensibility in a Q&A; no re-run needed | 2 h |
-| 7.5 | Reference-pixel audit + provenance stamp | Removes ±5 mm/yr bias; auditable | 4 h + 1 run |
-| 7.18 | Stop bypassing reference mask | Silent-failure removal; complements 7.5 | 2 h |
-| 7.8a | Forest-cover disclaimer on risk map | We must stop implying we see under canopy | 1 day |
-| 7.15 | Confidence layer | Makes edge pixels honest | 1 day |
+| 7.14 | Reclassify "stable" band | Already consistent in `default.yaml`; confirm `subsidence_class.py` usage | 15 min |
+| 7.3 | Unify coherence thresholds | Partially landed (new `risk_score.coherence_threshold` in commit 8ab975e). Finish by surfacing `analysis.min_coherence` in report. | 1 h |
+| 7.18 | Stop bypassing reference mask | Complements 7.5; currently reverted (§5.12). Restore after 7.5. | 2 h |
+| 7.8a | Forest-cover disclaimer on risk map | Coherence mean 0.137 in this run demonstrates: we do not see under canopy. | 1 day |
+| 7.15 | Confidence layer | 0.18% valid-pixel coverage makes a confidence band non-negotiable for the dashboard | 1 day |
 | 7.20 | Dashboard: surface uncertainty | Keeps the demo honest | 4 h |
+
+**New P0 added 2026-04-19:**
+
+| # | Fix | Why now | Effort |
+|---|---|---|---|
+| 7.21 | Preserve full geom_reference in local consolidation | Synthetic lat/lon unblocks the pipeline but corrupts the georeferencing story. Fix: reprocess 1 pair after commit 077e19e so full lat/lon/hgt land in `geom_reference/`. Then 7.17 becomes a 1-line flip. | 30 min |
+| 7.22 | Diagnose root cause of 0.137 mean coherence | 0.3% of pixels above 0.5 is extreme even for tropical peat. Suspected causes: bad reference, IW3 edge effects, ESD-off azimuth misreg, 2-yr network. Bisect with a 6-month subset. | 1 day |
+| 7.23 | Separate GRD download path fix | GRD scenes land in `output/raw/grd_hd/` but backscatter searches `scratch/raw/grd/`. Currently bridged with a symlink. Proper fix: update `cli.py::find_grd_files` to search `grd_hd/` too, or standardise the download target. | 1 h |
 
 ### P1 — do within 1 month
 
