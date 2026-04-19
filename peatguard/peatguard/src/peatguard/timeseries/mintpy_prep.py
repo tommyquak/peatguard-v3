@@ -113,6 +113,7 @@ _MINTPY_TEMPLATE = textwrap.dedent("""\
     ########## network modification
     mintpy.network.coherenceBased  = {coh_based}
     mintpy.network.minCoherence    = {min_coh}
+{start_date_line}
 
     ########## unwrapping error correction
     mintpy.unwrapError.method      = {unwrap_error_method}
@@ -412,6 +413,16 @@ def generate_mintpy_config(
 
     coh_based = "yes" if config.mintpy.network_modification.coherence_based else "no"
     min_coh = config.mintpy.network_modification.min_coherence
+    start_date = (config.mintpy.network_modification.start_date or "").strip()
+    if start_date:
+        start_date_line = (
+            f"    mintpy.network.startDate       = {start_date}"
+        )
+        logger.info("MintPy network.startDate filter: %s", start_date)
+    else:
+        start_date_line = (
+            "    ## mintpy.network.startDate     = (no filter)"
+        )
 
     # Build reference point configuration.
     # Priority: override_ref_yx (from two-phase ERA5 selection) > config lat/lon > auto.
@@ -485,6 +496,7 @@ def generate_mintpy_config(
         east=east,
         coh_based=coh_based,
         min_coh=min_coh,
+        start_date_line=start_date_line,
         reference_point_block=reference_point_block,
         unwrap_error_method=unwrap_error_method,
         tropo_method=tropo_method,

@@ -337,6 +337,16 @@ class MintPyNetworkConfig(BaseModel):
 
     coherence_based: bool = True
     min_coherence: float = 0.3
+    start_date: str = Field(
+        default="",
+        description=(
+            "MintPy network.startDate filter in YYYYMMDD form. Empty string "
+            "disables the filter (default). Set to restrict the SBAS network "
+            "to pairs whose reference date is on or after this cutoff -- "
+            "useful for isolating a single year from a multi-year ingest to "
+            "reduce temporal decorrelation in C-band."
+        ),
+    )
 
 
 class MintPyConfig(BaseModel):

@@ -346,22 +346,40 @@ def run_insar_stage(
                 logger.warning("Failed to consolidate %s: %s", src.name, exc)
 
         # Populate geom_reference once from the first pair that has it.
-        # Use an explicit sentinel (lat.rdr) to decide "already populated"
-        # so that the los.rdr copy below doesn't prevent the full geometry
-        # copy from ever running.
-        geom_src = merged_src / "geom_reference"
+        # topsApp emits per-burst geometry at merged/geom_reference/IWx/
+        # (hgt_01.rdr, lat_02.rdr, ...); MintPy wants flattened hgt.rdr /
+        # lat.rdr / lon.rdr at geom_reference/ top level. Call
+        # _merge_burst_geometry on each IW* subdir to do the flatten +
+        # multilook. Also inspect pair_dir/geom_reference/ sibling (the
+        # topsApp variant _upload_pair_to_gcs defensively handles).
+        az_looks = config.sentinel1.azimuth_looks if hasattr(config, "sentinel1") and hasattr(config.sentinel1, "azimuth_looks") else 3
+        rg_looks = config.sentinel1.range_looks if hasattr(config, "sentinel1") and hasattr(config.sentinel1, "range_looks") else 9
         lat_marker = geom_root / "lat.rdr"
-        if geom_src.exists() and not lat_marker.exists():
-            for item in geom_src.iterdir():
-                dst = geom_root / item.name
+        if not lat_marker.exists():
+            candidate_dirs = []
+            for geom_src in (merged_src / "geom_reference", pair_dir / "geom_reference"):
+                if not geom_src.exists():
+                    continue
+                # Burst strips live inside IWx/ subdirs; prefer those when present.
+                iw_dirs = sorted(p for p in geom_src.iterdir() if p.is_dir() and p.name.startswith("IW"))
+                if iw_dirs:
+                    candidate_dirs.extend(iw_dirs)
+                else:
+                    # Flat layout (already merged elsewhere or single-burst)
+                    candidate_dirs.append(geom_src)
+            for cand in candidate_dirs:
                 try:
-                    if item.is_file():
-                        shutil.copy2(str(item), str(dst))
-                    elif item.is_dir():
-                        shutil.copytree(str(item), str(dst), dirs_exist_ok=True)
+                    _merge_burst_geometry(cand, geom_root, az_looks=az_looks, rg_looks=rg_looks)
                 except Exception as exc:
-                    logger.warning("Failed to consolidate geom %s: %s", item.name, exc)
-            logger.info("Consolidated reference geometry from pair %s", pair_id)
+                    logger.warning("Burst merge failed for %s: %s", cand, exc)
+                if lat_marker.exists():
+                    logger.info("Consolidated reference geometry from %s (pair %s)", cand, pair_id)
+                    break
+            if not lat_marker.exists():
+                logger.warning(
+                    "Pair %s: could not produce lat.rdr/lon.rdr/hgt.rdr from geometry; "
+                    "stage 3 may fall back to synthetic lookups", pair_id,
+                )
 
         # MintPy also expects los.rdr at the top of geom_reference (copied
         # from the per-pair merged output, since topsApp puts it there).
@@ -1815,15 +1833,23 @@ def run_analysis_stage(
 
         risk_path = output_dir / "canal_risk.tif"
         risk_cfg = config.risk_score
-        # Pass coherence for quality filtering (matches carbon_loss approach).
-        # vel_for_risk may be UTM (when reprojected for distance alignment),
-        # so fall back to the UTM coherence product when the native-grid
-        # coherence is missing -- otherwise the shape check in
-        # generate_risk_map silently skips the filter.
-        coh_for_risk = output_dir / "coherence_median.tif"
-        if not coh_for_risk.exists():
-            coh_for_risk = output_dir / "coherence_median_utm.tif"
-        if not coh_for_risk.exists():
+        # Pass coherence for quality filtering. vel_for_risk may have been
+        # reprojected to UTM (to align with canal_distance); when that
+        # happens we must pick the UTM coherence product, otherwise the
+        # shape-equality check in generate_risk_map is False and the
+        # filter is silently skipped (only a warning logged).
+        vel_is_utm = (vel_for_risk == aligned_vel_path)
+        primary = output_dir / ("coherence_median_utm.tif" if vel_is_utm else "coherence_median.tif")
+        fallback = output_dir / ("coherence_median.tif" if vel_is_utm else "coherence_median_utm.tif")
+        if primary.exists():
+            coh_for_risk = primary
+        elif fallback.exists():
+            coh_for_risk = fallback
+            logger.warning(
+                "Primary coherence %s missing; falling back to %s (shape may mismatch)",
+                primary.name, fallback.name,
+            )
+        else:
             coh_for_risk = None
         generate_risk_map(
             vel_for_risk, canal_dist_path, risk_path,

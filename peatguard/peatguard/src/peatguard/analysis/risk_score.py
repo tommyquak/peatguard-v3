@@ -184,19 +184,41 @@ def generate_risk_map(
         vel_smoothed, severe_threshold=severe_velocity_mm_yr, nodata=nodata
     )
     del vel_smoothed
-    combined = compute_combined_risk(
+
+    # Full weighted risk (requires valid velocity)
+    combined_full = compute_combined_risk(
         proximity_risk,
         subsidence_risk,
         proximity_weight,
         subsidence_weight,
     )
 
-    # Mark nodata pixels. Rebuild from the running `valid` mask so the
-    # coherence filter applied above is preserved -- otherwise low-coherence
-    # pixels would still receive a proximity-only combined risk.
-    invalid = ~valid
+    # Distance validity: distance_path is canal_distance.tif. Nodata can be
+    # either the raster's declared nodata or non-finite values.
+    dist_nodata = dist_meta.get("nodata")
+    dist_valid = np.isfinite(distance)
+    if dist_nodata is not None:
+        dist_valid &= distance != dist_nodata
 
-    # Exclude water pixels from risk score
+    # Proximity-only fallback: where velocity is unavailable but canal
+    # distance is, publish the proximity component (0-1) on its own so the
+    # map covers the AOI instead of collapsing to a tiny high-coherence
+    # patch. Confidence band below distinguishes "velocity-backed" (2)
+    # from "proximity-only" (1) for the map reader.
+    vel_valid = valid.copy()  # after coherence filter
+    fallback_cells = dist_valid & ~vel_valid
+    combined = combined_full.copy()
+    combined[fallback_cells] = proximity_risk[fallback_cells]
+
+    # Confidence band: 0 nodata, 1 proximity-only, 2 velocity-backed.
+    confidence = np.zeros_like(combined, dtype=np.uint8)
+    confidence[fallback_cells] = 1
+    confidence[vel_valid] = 2
+
+    # Invalid = neither velocity nor distance valid (nowhere to compute risk)
+    invalid = ~vel_valid & ~fallback_cells
+
+    # Exclude water pixels from risk score and confidence
     if water_mask_path is not None and water_mask_path.exists():
         wm_data, wm_meta = read_raster(water_mask_path)
         water = wm_data[0].astype(bool)
@@ -225,12 +247,23 @@ def generate_risk_map(
 
         n_water_excluded = (water & ~invalid).sum()
         invalid = invalid | water
+        confidence[water] = 0
         logger.info(
             "Water mask applied to risk score: %d water pixels excluded",
             n_water_excluded,
         )
 
     combined[invalid] = -9999.0
+
+    n_full = int(vel_valid.sum() & ~invalid if False else (vel_valid & ~invalid).sum())
+    n_prox = int((fallback_cells & ~invalid).sum())
+    n_total = combined.size
+    logger.info(
+        "Risk map coverage: velocity-backed=%d (%.1f%%), proximity-only=%d (%.1f%%), total=%d (%.1f%%)",
+        n_full, 100 * n_full / n_total,
+        n_prox, 100 * n_prox / n_total,
+        n_full + n_prox, 100 * (n_full + n_prox) / n_total,
+    )
 
     valid_mask = ~invalid
     if valid_mask.any():
@@ -242,6 +275,19 @@ def generate_risk_map(
         )
     else:
         logger.warning("Risk map: no valid pixels")
+
+    # Write confidence sidecar next to the risk raster
+    confidence_path = output_path.parent / f"{output_path.stem}_confidence.tif"
+    write_cog(
+        data=confidence,
+        output_path=confidence_path,
+        crs=vel_meta["crs"],
+        transform=vel_meta["transform"],
+        nodata=0,
+        band_names=["risk_confidence"],
+        dtype="uint8",
+    )
+    logger.info("Risk confidence sidecar: %s", confidence_path.name)
 
     return write_cog(
         data=combined,
