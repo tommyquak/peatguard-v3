@@ -522,6 +522,89 @@ low-σ high-coherence neighbourhood and stamp its provenance into the output
 metadata. Until then, the current calibration is not defensible under
 scrutiny.
 
+### 5.13 Bridging unwrap error correction → phase_closure (added 2026-04-19)
+
+**Symptom:** forest-change validation returned *all* cohort means pinned at
+the −200 mm/yr velocity clamp — a physical impossibility — and `CONSISTENT`
+was flipping to `INCONSISTENT` depending on run. Signature of unwrap errors
+propagating through the SBAS inversion and saturating the clamp.
+
+**Attempt 1:** flipped `unwrap_error_correction: no → bridging`. MintPy's
+bridging algorithm raised `ValueError: input reference point is NOT included
+in the connectComponent` — REF_Y=92/X=502 isn't in every pair's
+connectComponent, a known failure mode for fragmented conncomps (tropical
+peat).
+
+**Attempt 2 (kept):** `unwrap_error_correction: phase_closure`. Uses
+triangle closure and does not require conncomp connectivity. Result: temporal
+coherence mean 0.14 → 0.17, cohort gradient now **CONSISTENT** (old −69,
+recent −88 mm/yr), velocity mean −24.9 mm/yr (Hooijer's range), clamp
+saturation gone.
+
+### 5.14 2024-only SBAS network via config (added 2026-04-19)
+
+Isolating the 1-year window from the 2-year ingest more than doubled valid
+coverage (0.41 % → 0.76 %) and matched V57's temporal window. Implemented
+as `mintpy.network_modification.start_date: "20240101"` config field (empty
+default) — promoted from the earlier hardcoded template literal that the
+remote ultrareview correctly flagged as a regression risk. Default keeps
+2024-only active, overridable via config or env var. See §6.6.
+
+### 5.15 Local consolidation now does burst merge (added 2026-04-19)
+
+**Before:** `_consolidate_pair_local` `copytree`d the per-burst `IW*/`
+subdirectory verbatim, leaving `lat_01.rdr`/`lat_02.rdr`/… inside
+`geom_reference/IW3/` but **no** flat `lat.rdr`/`lon.rdr`/`hgt.rdr` at
+the top level MintPy expects. The `lat_marker` sentinel guard in §5.8
+therefore never fired, and §5.10's synthetic-lookup workaround was
+required to ship.
+
+**Now:** after each pair completes, we call `_merge_burst_geometry` on
+each `IW*` subdir (and also inspect `pair_dir/geom_reference/` — the
+topsApp sibling layout that `_upload_pair_to_gcs` defensively handles).
+Bursts get flattened and multilooked to match the interferogram grid.
+The §5.10 placeholder becomes a no-op on future runs; §7.17 (enable
+`mintpy.geocode = yes`) reduces to a 1-line config flip.
+
+**Caveat for this run:** the per-pair scratch dirs from the 2026-04-19
+stage-2 pass were deleted by pre-cleanup *before* this fix landed, so
+the current `scratch/insar/merged/geom_reference/` still contains only
+the `IW3/` verbatim copy + synthetic `lat.rdr`/`lon.rdr`. The fix takes
+effect the next time stage 2 is executed.
+
+### 5.16 Coherence CRS-aware selection for risk filter (added 2026-04-19)
+
+The remote ultrareview flagged that `run_analysis_stage` was passing
+`coherence_median.tif` (EPSG:4326) to `generate_risk_map` while
+`vel_for_risk` had just been reprojected to UTM by the distance-
+alignment block above. The shape-equality check inside `generate_risk_map`
+was therefore always false in the default path, and the `risk_score.
+coherence_threshold` filter silently no-op'd with only a `WARNING`. Fix:
+pick `coherence_median_utm.tif` when velocity is UTM and fall back to
+the native-grid copy otherwise (see commit e042bab). The risk-coherence
+filter now actually runs.
+
+### 5.17 Proximity-only risk fallback + confidence sidecar (added 2026-04-19)
+
+**Before:** `generate_risk_map` published `-9999` everywhere velocity was
+nodata, which collapsed the user-facing risk map to a 0.76 % cluster of
+high-temporal-coherence residue. This was correct in a narrow sense
+(no velocity → no subsidence risk) but unusable as a decision layer for
+a 17 km × 11 km AOI.
+
+**Now:** where `canal_distance` is valid but `velocity` is not, the risk
+map publishes `proximity_risk` on its own (value range 0–1, same scale).
+A companion `canal_risk_confidence.tif` uint8 sidecar encodes
+`2 = velocity-backed` (0.76 %), `1 = proximity-only` (98.12 %),
+`0 = water/nodata` (1.12 %). Coverage jumps from 0.76 % → **98.88 %**
+without inventing velocity data, and the confidence band lets map
+readers distinguish evidence-backed reds from extrapolated hazard zones.
+
+The ArcGIS recipe: stack `canal_risk` under a diagonal-hatch rendering
+of `canal_risk_confidence` (low-confidence areas hatched, high-confidence
+solid) so the viewer instantly sees where the map is grounded in InSAR
+and where it is proximity-extrapolation.
+
 ---
 
 ## 6. Hole-Poking — Where This Plan Could Fail
