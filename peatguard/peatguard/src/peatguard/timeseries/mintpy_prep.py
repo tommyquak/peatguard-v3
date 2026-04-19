@@ -134,12 +134,12 @@ _MINTPY_TEMPLATE = textwrap.dedent("""\
     mintpy.velocity.endDate            = auto
 
     ########## geocoding
-    ## Enabled so MintPy resamples to true geographic coordinates using the
-    ## lat.rdr/lon.rdr lookup tables. Leaving this off forced the downstream
-    ## export to fall back to an affine approximation with ~1-3 km georef
-    ## error, which is larger than the 1200 m canal-influence radius.
-    mintpy.geocode                     = yes
-    mintpy.geocode.laloStep            = -0.00009, 0.00009
+    ## Disabled in this run: consolidation did not preserve lat.rdr/lon.rdr
+    ## lookup files, so MintPy's check_loaded_dataset fails with
+    ## FileNotFoundError. Downstream export falls back to affine-approx
+    ## georeferencing (1-3 km error). Re-enable after the consolidation
+    ## function preserves full per-burst geom_reference contents.
+    mintpy.geocode                     = no
 """)
 
 
@@ -421,7 +421,7 @@ def generate_mintpy_config(
             "    ## Fixed reference point from two-phase ERA5 selection (pixel coords)\n"
             f"    mintpy.reference.yx         = {ref_y}, {ref_x}\n"
             f"    mintpy.reference.minCoherence = {config.mintpy.reference_min_coherence}\n"
-            "    mintpy.reference.maskFile    = auto"
+            "    mintpy.reference.maskFile    = no"
         )
         logger.info(
             "Using locked reference point from phase 1: Y=%d, X=%d",
@@ -433,7 +433,7 @@ def generate_mintpy_config(
             "    ## Fixed reference point on stable ground (configured in YAML)\n"
             f"    mintpy.reference.lalo       = {ref_lalo[0]}, {ref_lalo[1]}\n"
             f"    mintpy.reference.minCoherence = {config.mintpy.reference_min_coherence}\n"
-            "    mintpy.reference.maskFile    = auto"
+            "    mintpy.reference.maskFile    = no"
         )
         logger.info(
             "Using fixed reference point: lat=%.6f, lon=%.6f",
@@ -610,12 +610,26 @@ def prep_data_for_mintpy(
         for i, (ref_date, sec_date) in enumerate(pairs):
             pair_dir = ifg_root / f"{ref_date}_{sec_date}"
 
-            # Read unwrapped phase (2-band BIL: amp + phase)
+            # Read unwrapped phase (2-band BIL: amp + phase). Pad short
+            # reads with zeros -- some pairs emit one row less when a
+            # reference SLC has a slightly different burst extent (e.g.
+            # 2023-11-18 in this AOI) and MintPy's stack requires uniform
+            # per-pair shape.
             unw_path = pair_dir / "filt_topophase.unw"
             if unw_path.exists():
                 data = np.fromfile(str(unw_path), dtype=np.float32)
                 expected = length * width * 2
-                data = data[:expected]  # trim trailing bytes if any
+                if data.size < expected:
+                    logger.warning(
+                        "Padding unw for %s_%s: %d -> %d floats (%d rows short)",
+                        ref_date, sec_date, data.size, expected,
+                        (expected - data.size) // (width * 2),
+                    )
+                    padded = np.zeros(expected, dtype=np.float32)
+                    padded[:data.size] = data
+                    data = padded
+                else:
+                    data = data[:expected]
                 data = data.reshape(length, width * 2)
                 unw_dset[i] = data[:, width:]  # Band 2 is phase
             else:
@@ -626,15 +640,25 @@ def prep_data_for_mintpy(
             if cor_path.exists():
                 data = np.fromfile(str(cor_path), dtype=np.float32)
                 expected = length * width
-                data = data[:expected]
+                if data.size < expected:
+                    padded = np.zeros(expected, dtype=np.float32)
+                    padded[:data.size] = data
+                    data = padded
+                else:
+                    data = data[:expected]
                 cor_dset[i] = data.reshape(length, width)
 
-            # Read connected components (byte format, trim to expected size)
+            # Read connected components (byte format, trim or pad to expected)
             conn_path = pair_dir / "filt_topophase.unw.conncomp"
             if conn_path.exists():
                 data = np.fromfile(str(conn_path), dtype=np.uint8)
                 expected = length * width
-                data = data[:expected]
+                if data.size < expected:
+                    padded = np.zeros(expected, dtype=np.uint8)
+                    padded[:data.size] = data
+                    data = padded
+                else:
+                    data = data[:expected]
                 conn_dset[i] = data.reshape(length, width).astype(np.int16)
 
             date12[i] = [ref_date.encode(), sec_date.encode()]

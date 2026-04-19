@@ -345,18 +345,13 @@ def run_insar_stage(
             except Exception as exc:
                 logger.warning("Failed to consolidate %s: %s", src.name, exc)
 
-        # MintPy expects los.rdr in geom_reference too
-        los_src = pair_dst / "los.rdr"
-        los_dst = geom_root / "los.rdr"
-        if los_src.exists() and not los_dst.exists():
-            shutil.copy2(str(los_src), str(los_dst))
-            los_xml = pair_dst / "los.rdr.xml"
-            if los_xml.exists():
-                shutil.copy2(str(los_xml), str(geom_root / "los.rdr.xml"))
-
-        # Populate geom_reference once from the first pair that has it
+        # Populate geom_reference once from the first pair that has it.
+        # Use an explicit sentinel (lat.rdr) to decide "already populated"
+        # so that the los.rdr copy below doesn't prevent the full geometry
+        # copy from ever running.
         geom_src = merged_src / "geom_reference"
-        if geom_src.exists() and not any(geom_root.iterdir()):
+        lat_marker = geom_root / "lat.rdr"
+        if geom_src.exists() and not lat_marker.exists():
             for item in geom_src.iterdir():
                 dst = geom_root / item.name
                 try:
@@ -367,6 +362,16 @@ def run_insar_stage(
                 except Exception as exc:
                     logger.warning("Failed to consolidate geom %s: %s", item.name, exc)
             logger.info("Consolidated reference geometry from pair %s", pair_id)
+
+        # MintPy also expects los.rdr at the top of geom_reference (copied
+        # from the per-pair merged output, since topsApp puts it there).
+        los_src = pair_dst / "los.rdr"
+        los_dst = geom_root / "los.rdr"
+        if los_src.exists() and not los_dst.exists():
+            shutil.copy2(str(los_src), str(los_dst))
+            los_xml = pair_dst / "los.rdr.xml"
+            if los_xml.exists():
+                shutil.copy2(str(los_xml), str(geom_root / "los.rdr.xml"))
 
         logger.info("Local consolidation: %s -> %s (%d files)",
                     pair_id, pair_dst, copied)
