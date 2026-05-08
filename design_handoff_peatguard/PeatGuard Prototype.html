@@ -1,0 +1,642 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>PeatGuard · Interactive prototype</title>
+<style>
+  html,body { margin: 0; background: #f0eee9; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; }
+  .stage { display: grid; grid-template-columns: 1fr 460px; gap: 28px; padding: 28px; min-height: 100vh; align-items: start; }
+  @media (max-width: 1320px) { .stage { grid-template-columns: 1fr; } }
+  .frame { background: #fff; border-radius: 14px; box-shadow: 0 1px 3px rgba(0,0,0,0.06), 0 8px 32px rgba(0,0,0,0.08); overflow: hidden; }
+  .frame-label { font-size: 11px; font-family: ui-monospace, monospace; color: rgba(60,50,40,0.7); margin: 0 0 8px 4px; text-transform: uppercase; letter-spacing: 0.08em; display: flex; align-items: center; gap: 8px; }
+  .reset-btn { font: inherit; font-size: 11px; padding: 3px 8px; border-radius: 99px; background: rgba(0,0,0,0.06); color: rgba(60,50,40,0.85); border: none; cursor: pointer; }
+  .reset-btn:hover { background: rgba(0,0,0,0.12); }
+</style>
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+<script type="text/babel" src="tokens.jsx"></script>
+<script type="text/babel" src="android-frame.jsx"></script>
+<script type="text/babel" src="components.jsx"></script>
+<script type="text/babel" src="web-screens-1.jsx"></script>
+<script type="text/babel" src="web-screens-2.jsx"></script>
+<script type="text/babel" src="mobile-screens.jsx"></script>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel" data-presets="env,react">
+// ── Shared ledger: a single task list mutated by both apps ───────────────
+const TASK_SEED = [
+  { id: 'C-04', type: 'canal_block', title: 'Tutup kanal · 1.2 km', titleEn: 'Block canal C-04', loc: 'Sebangau · 1.2 km', amt: 250000, deadline: '14 Mei', status: 'available', dist: '1.2 km', sub: '0.42 ha · butuh 3 foto + GPS', worker: null, photos: [], gps: null },
+  { id: 'M-12', type: 'replant', title: 'Tanam ulang · plot 12', titleEn: 'Replant plot 12', loc: 'Mawai Estate · 2.4 km', amt: 180000, deadline: '20 Mei', status: 'available', dist: '2.4 km', sub: '1 ha · bibit disediakan', worker: null, photos: [], gps: null },
+  { id: 'F-B',  type: 'patrol', title: 'Patroli api Sektor B', titleEn: 'Fire patrol sector B', loc: 'Sektor B · 0.8 km', amt: 150000, deadline: 'Hari ini', status: 'accepted', dist: '0.8 km', sub: 'Shift sore 14:00–20:00', worker: 'me', photos: [], gps: null },
+  { id: 'C-02', type: 'canal_block', title: 'Tutup kanal · sebelumnya', titleEn: 'Block canal C-02', loc: 'Sebangau', amt: 250000, deadline: '02 Mei', status: 'submitted', dist: '—', sub: 'Menunggu review operator', worker: 'me', photos: ['p-01','p-02','p-03'], gps: { lat: -2.341, lng: 113.91 } },
+];
+
+// Mock prefill of completed work used by 'Earnings'
+const EARNED = [
+  { id: 'C-04-prev', t: 'Tutup kanal · SBG C-04', d: '12 Mei', amt: 250000, ok: true },
+  { id: 'M-11',     t: 'Tanam ulang · MWE plot 11', d: '08 Mei', amt: 180000, ok: true },
+  { id: 'F-B-prev', t: 'Patroli api · sektor B', d: '04 Mei', amt: 150000, ok: true },
+  { id: 'C-01',     t: 'Tutup kanal · SBG C-01', d: '28 Apr', amt: 250000, ok: true },
+];
+
+// ──────────────────────────────────────────────────────────────────────
+// Mobile prototype — full flow with state machine
+// available → detail → accept → en-route → at-site → photo:before → photo:during → photo:after → review → submitted → paid
+// ──────────────────────────────────────────────────────────────────────
+function MobilePrototype() {
+  const [tasks, setTasks] = React.useState(TASK_SEED);
+  const [tab, setTab] = React.useState('home');           // home/tasks/wallet/msg/me
+  const [route, setRoute] = React.useState({ s: 'home' });// stack-style route
+  const [active, setActive] = React.useState(null);       // active task id
+
+  const goto = (s, extra={}) => setRoute({ s, ...extra });
+  const back = () => setRoute(r => r.prev || { s: 'home' });
+
+  // mutators
+  const acceptTask = (id) => { setTasks(ts => ts.map(t => t.id === id ? { ...t, status: 'accepted', worker: 'me' } : t)); setActive(id); goto('navigate'); };
+  const arriveAtSite = () => { setTasks(ts => ts.map(t => t.id === active ? { ...t, gps: { lat: -2.341, lng: 113.91, acc: 8.4 } } : t)); goto('capture', { phase: 'before' }); };
+  const capturePhoto = (phase) => {
+    const next = phase === 'before' ? 'during' : phase === 'during' ? 'after' : 'review';
+    setTasks(ts => ts.map(t => t.id === active ? { ...t, photos: [...(t.photos||[]), { phase, ts: Date.now(), gps: { lat: -2.341+Math.random()*0.001, lng: 113.91+Math.random()*0.001, acc: 7+Math.random()*4 } }] } : t));
+    if (next === 'review') goto('review'); else goto('capture', { phase: next });
+  };
+  const submitTask = () => { setTasks(ts => ts.map(t => t.id === active ? { ...t, status: 'submitted' } : t)); goto('submitted'); };
+
+  const t = tasks.find(x => x.id === active);
+
+  // resolve which screen to show
+  let screen;
+  if (route.s === 'home')        screen = <HomeScreen tasks={tasks} onTask={(id) => { setActive(id); goto('detail', { prev: route }); }} tab={tab} onTab={setTab}/>;
+  else if (route.s === 'detail')   screen = <DetailScreen task={t} onBack={back} onAccept={() => acceptTask(active)}/>;
+  else if (route.s === 'navigate') screen = <NavigateScreen task={t} onBack={back} onArrive={arriveAtSite}/>;
+  else if (route.s === 'capture')  screen = <CaptureScreen task={t} phase={route.phase} onBack={back} onCapture={() => capturePhoto(route.phase)}/>;
+  else if (route.s === 'review')   screen = <ReviewScreen task={t} onBack={back} onSubmit={submitTask}/>;
+  else if (route.s === 'submitted')screen = <SubmittedScreen task={t} onHome={() => { setActive(null); setTab('wallet'); goto('home'); }}/>;
+  else if (route.s === 'profile')  screen = <ProfileBack onBack={back}/>;
+  else if (route.s === 'messages') screen = <MessagesBack onBack={back}/>;
+  else screen = <HomeScreen tasks={tasks} onTask={(id) => { setActive(id); goto('detail', { prev: route }); }} tab={tab} onTab={setTab}/>;
+
+  // intercept tab changes
+  const handleTab = (id) => {
+    setTab(id);
+    if (id === 'home' || id === 'tasks') goto('home');
+    if (id === 'wallet') goto('wallet');
+    if (id === 'msg')    goto('messages');
+    if (id === 'me')     goto('profile');
+  };
+  if (route.s === 'wallet') screen = <WalletScreen tasks={tasks} onTab={handleTab}/>;
+  if (route.s === 'messages') screen = <MessagesScreen onTab={handleTab} onBack={back}/>;
+  if (route.s === 'profile')  screen = <ProfileScreen onTab={handleTab} onBack={back}/>;
+  // when home is rendered we should still pass current tab
+  if (route.s === 'home') screen = <HomeScreen tasks={tasks} tab={tab} onTab={handleTab} onTask={(id) => { setActive(id); goto('detail', { prev: route }); }}/>;
+
+  return (
+    <div>
+      <div className="frame-label">
+        <span>📱 Mobile · Sumardi (villager) · Hampangen Jaya</span>
+        <button className="reset-btn" onClick={() => { setTasks(TASK_SEED); setActive(null); setTab('home'); setRoute({ s: 'home' }); }}>↻ Reset</button>
+        <span style={{ marginLeft: 'auto', fontFamily: 'ui-monospace,monospace' }}>{route.s}{route.phase ? '/' + route.phase : ''}</span>
+      </div>
+      <div className="frame" style={{ width: 393, marginLeft: 'auto' }}>
+        <AndroidDevice><div style={{ width: '100%', height: '100%' }}>{screen}</div></AndroidDevice>
+      </div>
+    </div>
+  );
+}
+
+// ── small render helpers reused across mobile screens ──
+function MobShell({ children, dark }) {
+  return <div className="pg-scope pg-mobile" data-mob-theme={dark ? 'dark' : 'light'}
+    style={{ width: 393, height: 766, background: dark ? '#0e1411' : 'var(--pg-surface)', color: dark ? '#f1f3ee' : 'var(--pg-ink)', display: 'flex', flexDirection: 'column', overflow: 'hidden', position: 'relative' }}>{children}</div>;
+}
+function MobIndicator() { return <div style={{ height: 24, display: 'grid', placeItems: 'center', background: 'inherit' }}><div style={{ width: 130, height: 4, borderRadius: 2, background: 'rgba(20,20,15,0.4)' }}/></div>; }
+function MobHeader({ title, sub, onBack, trail }) {
+  return (
+    <header style={{ padding: '14px 16px 10px', display: 'flex', alignItems: 'center', gap: 12, background: 'var(--pg-surface-raised)', borderBottom: '1px solid var(--pg-border)' }}>
+      <button onClick={onBack} style={{ width: 38, height: 38, borderRadius: 10, background: 'var(--pg-surface-sunken)', display: 'grid', placeItems: 'center', border: 'none', cursor: 'pointer' }}>
+        <Icon name="chev" size={20} style={{ transform: 'scaleX(-1)' }}/>
+      </button>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 15.5, fontWeight: 700, letterSpacing: -0.01 }}>{title}</div>
+        {sub && <div style={{ fontSize: 11.5, color: 'var(--pg-ink-muted)' }}>{sub}</div>}
+      </div>
+      {trail}
+    </header>
+  );
+}
+function TabBar({ active, onTab }) {
+  const tabs = [
+    { id: 'home', i: 'map', l: 'Peta' },
+    { id: 'tasks', i: 'list', l: 'Tugas' },
+    { id: 'wallet', i: 'wallet', l: 'Bayaran' },
+    { id: 'msg', i: 'msg', l: 'Pesan' },
+    { id: 'me', i: 'user', l: 'Saya' },
+  ];
+  return (
+    <nav style={{ display: 'grid', gridTemplateColumns: 'repeat(5,1fr)', borderTop: '1px solid var(--pg-border)', background: 'var(--pg-surface-raised)', padding: '6px 4px 8px' }}>
+      {tabs.map(t => (
+        <button key={t.id} onClick={() => onTab(t.id)} style={{ background: 'transparent', border: 'none', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, padding: '8px 4px', color: active === t.id ? 'var(--pg-primary)' : 'var(--pg-ink-muted)', cursor: 'pointer' }}>
+          <span style={{ width: 56, height: 28, borderRadius: 14, background: active === t.id ? 'var(--pg-primary-soft)' : 'transparent', display: 'grid', placeItems: 'center' }}>
+            <Icon name={t.i} size={20} stroke={active === t.id ? 2 : 1.6}/>
+          </span>
+          <span style={{ fontSize: 11, fontWeight: active === t.id ? 700 : 500 }}>{t.l}</span>
+        </button>
+      ))}
+    </nav>
+  );
+}
+function TaskRow({ task, onClick }) {
+  const tones = { available: ['var(--pg-gold)', 'Tersedia'], accepted: ['var(--pg-info)', 'Diterima'], submitted: ['var(--pg-accent)', 'Dikirim'], paid: ['var(--pg-ink-muted)', 'Selesai · dibayar'] };
+  const [c, l] = tones[task.status];
+  return (
+    <button onClick={onClick} style={{ width: '100%', textAlign: 'left', padding: 14, background: 'var(--pg-surface-raised)', border: '1px solid var(--pg-border)', borderRadius: 14, display: 'flex', gap: 12, alignItems: 'flex-start', cursor: 'pointer' }}>
+      <div style={{ width: 44, height: 44, borderRadius: 22, background: 'var(--pg-gold-soft)', display: 'grid', placeItems: 'center', flexShrink: 0 }}>
+        <Icon name="shield" size={22} style={{ color: c }}/>
+      </div>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 3 }}>
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 10.5, fontWeight: 700, color: c, textTransform: 'uppercase' }}>
+            <span style={{ width: 6, height: 6, borderRadius: 3, background: c }}/>{l}
+          </span>
+          <span style={{ fontSize: 11, color: 'var(--pg-ink-muted)' }}>· {task.dist} · {task.deadline}</span>
+        </div>
+        <div style={{ fontSize: 14.5, fontWeight: 700 }}>{task.title}</div>
+        <div style={{ fontSize: 12, color: 'var(--pg-ink-muted)', marginTop: 2 }}>{task.sub}</div>
+      </div>
+      <div style={{ textAlign: 'right' }}>
+        <div style={{ fontSize: 16, fontWeight: 700, fontFamily: 'var(--pg-font-mono)' }}>Rp {(task.amt/1000).toFixed(0)}rb</div>
+        <Icon name="chev" size={16} style={{ color: 'var(--pg-ink-muted)', marginTop: 4 }}/>
+      </div>
+    </button>
+  );
+}
+
+// ── Mobile screens (interactive variants) ──
+function HomeScreen({ tasks, tab, onTab, onTask }) {
+  const visible = tasks.filter(t => t.status !== 'paid');
+  return (
+    <MobShell>
+      <header style={{ padding: '12px 16px', display: 'flex', alignItems: 'center', gap: 10, background: 'var(--pg-surface-raised)', borderBottom: '1px solid var(--pg-border)' }}>
+        <div style={{ width: 38, height: 38, borderRadius: 19, background: 'linear-gradient(135deg,#3d2818,#c89b3c)', color: '#fff', display: 'grid', placeItems: 'center', fontWeight: 700, fontSize: 13 }}>SB</div>
+        <div style={{ flex: 1 }}>
+          <div style={{ fontSize: 14, fontWeight: 700 }}>Selamat pagi, Sumardi</div>
+          <div style={{ fontSize: 11.5, color: 'var(--pg-ink-muted)' }}>Hampangen Jaya · {visible.filter(t => t.status === 'available').length} tugas tersedia</div>
+        </div>
+        <button onClick={() => onTab('msg')} style={{ width: 38, height: 38, borderRadius: 10, background: 'var(--pg-surface-sunken)', border: 'none', position: 'relative', cursor: 'pointer' }}>
+          <Icon name="bell" size={18}/>
+          <span style={{ position: 'absolute', top: 6, right: 6, width: 8, height: 8, borderRadius: 4, background: 'var(--pg-risk)' }}/>
+        </button>
+      </header>
+      <div style={{ height: 220, position: 'relative' }}>
+        <MapStub layer="tasks · offline tiles" bg="assets/aoi-satellite.png" full style={{ borderRadius: 0, height: '100%' }}>
+          <div style={{ position: 'absolute', top: '54%', left: '40%', width: 18, height: 18, borderRadius: 9, background: 'var(--pg-info)', border: '3px solid #fff', boxShadow: '0 0 0 6px rgba(44,110,155,0.2)' }}/>
+          {visible.slice(0, 3).map((tk, i) => (
+            <button key={tk.id} onClick={() => onTask(tk.id)} style={{ position: 'absolute', left: `${30 + i*22}%`, top: `${28 + i*14}%`, transform: 'translate(-50%,-100%)', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, background: 'transparent', border: 'none', cursor: 'pointer' }}>
+              <span style={{ padding: '3px 8px', background: tk.status === 'available' ? 'var(--pg-gold)' : tk.status === 'accepted' ? 'var(--pg-info)' : 'var(--pg-accent)', color: '#fff', borderRadius: 999, fontSize: 11, fontWeight: 700, boxShadow: '0 2px 6px rgba(0,0,0,0.25)' }}>Rp {(tk.amt/1000).toFixed(0)}rb</span>
+              <span style={{ width: 0, height: 0, borderLeft: '5px solid transparent', borderRight: '5px solid transparent', borderTop: '7px solid var(--pg-gold)' }}/>
+            </button>
+          ))}
+        </MapStub>
+      </div>
+      <div style={{ flex: 1, overflow: 'auto', padding: '14px 14px', background: 'var(--pg-surface)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+          <span style={{ fontSize: 14, fontWeight: 700 }}>Tugas terdekat</span>
+          <span style={{ fontSize: 11, color: 'var(--pg-ink-muted)' }}>{visible.length} item</span>
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {visible.map(tk => <TaskRow key={tk.id} task={tk} onClick={() => onTask(tk.id)}/>)}
+        </div>
+      </div>
+      <TabBar active={tab} onTab={onTab}/>
+      <MobIndicator/>
+    </MobShell>
+  );
+}
+
+function DetailScreen({ task, onBack, onAccept }) {
+  return (
+    <MobShell>
+      <MobHeader title={task.title} sub={task.loc} onBack={onBack}/>
+      <div style={{ flex: 1, overflow: 'auto' }}>
+        <div style={{ height: 180 }}>
+          <MapStub layer="lokasi · offline" bg="assets/aoi-satellite.png" full style={{ borderRadius: 0, height: '100%' }}>
+            <div style={{ position: 'absolute', top: '45%', left: '50%', transform: 'translate(-50%,-100%)', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+              <span style={{ padding: '3px 8px', background: 'var(--pg-gold)', color: '#fff', borderRadius: 999, fontSize: 11, fontWeight: 700 }}>Rp {(task.amt/1000).toFixed(0)}rb</span>
+              <span style={{ width: 0, height: 0, borderLeft: '5px solid transparent', borderRight: '5px solid transparent', borderTop: '7px solid var(--pg-gold)' }}/>
+            </div>
+          </MapStub>
+        </div>
+        <div style={{ padding: 18, display: 'flex', flexDirection: 'column', gap: 14 }}>
+          <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between' }}>
+            <div>
+              <Chip tone="gold" size="sm">Tersedia</Chip>
+              <h1 style={{ fontSize: 22, fontWeight: 700, marginTop: 8 }}>{task.title}</h1>
+              <div style={{ fontSize: 12, color: 'var(--pg-ink-muted)', marginTop: 2 }}>Tenggat: {task.deadline}</div>
+            </div>
+            <div style={{ textAlign: 'right' }}>
+              <div style={{ fontSize: 11, color: 'var(--pg-ink-muted)', textTransform: 'uppercase', fontWeight: 600 }}>Bayaran</div>
+              <div style={{ fontSize: 22, fontWeight: 700, fontFamily: 'var(--pg-font-mono)' }}>Rp {(task.amt/1000).toFixed(0)}rb</div>
+            </div>
+          </div>
+          <Card pad={14}>
+            <div style={{ fontSize: 12.5, fontWeight: 700, marginBottom: 8 }}>Yang harus dikerjakan</div>
+            <ol style={{ margin: 0, paddingLeft: 18, fontSize: 13, lineHeight: 1.55 }}>
+              <li>Bawa material dam ke titik kanal.</li>
+              <li>Pasang dam di mulut kanal selebar minimal 8 m.</li>
+              <li>Foto: sebelum, sedang, sesudah · GPS aktif.</li>
+            </ol>
+          </Card>
+          <Card pad={14}>
+            <div style={{ fontSize: 12.5, fontWeight: 700, marginBottom: 10 }}>Wajib dikirim</div>
+            {['3 foto bertag GPS','Track GPS dam (≥ 8 m)','Catatan suara opsional'].map(d => (
+              <div key={d} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '6px 0', fontSize: 13 }}>
+                <span style={{ width: 18, height: 18, borderRadius: 9, background: 'var(--pg-accent-soft)', color: 'var(--pg-accent)', display: 'grid', placeItems: 'center' }}><Icon name="check" size={11} stroke={2.5}/></span>
+                {d}
+              </div>
+            ))}
+          </Card>
+        </div>
+      </div>
+      <div style={{ padding: '12px 16px 8px', background: 'var(--pg-surface-raised)', borderTop: '1px solid var(--pg-border)', display: 'flex', gap: 10 }}>
+        <Btn kind="secondary" size="lg">Tanya</Btn>
+        <Btn kind="primary" size="lg" full icon="check" onClick={onAccept}>Terima · Rp {(task.amt/1000).toFixed(0)}rb</Btn>
+      </div>
+      <MobIndicator/>
+    </MobShell>
+  );
+}
+
+function NavigateScreen({ task, onBack, onArrive }) {
+  const [progress, setProgress] = React.useState(0);
+  React.useEffect(() => { const i = setInterval(() => setProgress(p => Math.min(100, p + 4)), 80); return () => clearInterval(i); }, []);
+  const arrived = progress >= 100;
+  return (
+    <MobShell>
+      <MobHeader title="Menuju lokasi" sub={`${task.loc} · GPS aktif`} onBack={onBack}/>
+      <div style={{ flex: 1, position: 'relative' }}>
+        <MapStub layer="navigasi · offline" bg="assets/aoi-satellite.png" full style={{ borderRadius: 0, height: '100%' }}>
+          <svg width="100%" height="100%" style={{ position: 'absolute', inset: 0 }}>
+            <path d="M 60 480 Q 140 380 200 320 T 340 180" stroke="var(--pg-primary)" strokeWidth="4" strokeDasharray="8 6" fill="none" strokeLinecap="round"/>
+          </svg>
+          <div style={{ position: 'absolute', top: `${72 - progress*0.36}%`, left: `${14 + progress*0.64}%`, width: 18, height: 18, borderRadius: 9, background: 'var(--pg-info)', border: '3px solid #fff', boxShadow: '0 0 0 6px rgba(44,110,155,0.25)', transition: 'all 0.1s linear' }}/>
+          <div style={{ position: 'absolute', top: '36%', left: '78%', width: 18, height: 18, borderRadius: 9, background: arrived ? 'var(--pg-accent)' : 'var(--pg-risk)', border: '3px solid #fff', boxShadow: arrived ? '0 0 0 8px rgba(87,167,115,0.35)' : '0 0 0 6px rgba(179,38,30,0.25)', transition: 'all 0.3s' }}/>
+          <div style={{ position: 'absolute', top: 12, left: 12, right: 12, padding: '12px 14px', background: 'var(--pg-primary)', color: '#fff', borderRadius: 14, display: 'flex', alignItems: 'center', gap: 12 }}>
+            <Icon name="arrowRight" size={26}/>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 14, fontWeight: 700 }}>{arrived ? 'Anda telah tiba' : 'Lurus ' + Math.round(1200 - progress*12) + ' m'}</div>
+              <div style={{ fontSize: 12, opacity: 0.85 }}>{arrived ? 'Tekan tombol di bawah' : 'menuju mulut kanal C-04'}</div>
+            </div>
+            <div style={{ textAlign: 'right' }}>
+              <div style={{ fontSize: 13, fontWeight: 700, fontFamily: 'var(--pg-font-mono)' }}>{(1.2 - progress*0.012).toFixed(1)} km</div>
+            </div>
+          </div>
+        </MapStub>
+      </div>
+      <div style={{ padding: '12px 16px 8px', background: 'var(--pg-surface-raised)', borderTop: '1px solid var(--pg-border)' }}>
+        <Btn kind={arrived ? 'success' : 'secondary'} size="lg" full icon={arrived ? 'check' : 'pin'} onClick={arrived ? onArrive : undefined} style={{ opacity: arrived ? 1 : 0.6, cursor: arrived ? 'pointer' : 'default' }}>
+          {arrived ? "Saya sudah di sini · Mulai foto" : 'Berjalan… GPS terkunci'}
+        </Btn>
+      </div>
+      <MobIndicator/>
+    </MobShell>
+  );
+}
+
+function CaptureScreen({ task, phase, onBack, onCapture }) {
+  const labels = { before: ['SEBELUM', 'Foto sebelum kerja', 'Berdiri di mulut kanal, arahkan kamera ke aliran air'], during: ['SEDANG', 'Foto sedang kerja', 'Tunjukkan dam yang sedang dipasang'], after: ['SESUDAH', 'Foto sesudah kerja', 'Foto dam selesai dengan air mulai naik di sisi hulu'] };
+  const [tag, , hint] = labels[phase];
+  const [, full] = labels[phase];
+  const idx = phase === 'before' ? 0 : phase === 'during' ? 1 : 2;
+  const [flashing, setFlashing] = React.useState(false);
+  const handleCapture = () => { setFlashing(true); setTimeout(() => { setFlashing(false); onCapture(); }, 350); };
+  return (
+    <MobShell dark>
+      <header style={{ padding: '12px 16px', background: '#000', color: '#fff', display: 'flex', alignItems: 'center', gap: 12 }}>
+        <button onClick={onBack} style={{ width: 36, height: 36, borderRadius: 18, background: 'rgba(255,255,255,0.15)', border: 'none', display: 'grid', placeItems: 'center', cursor: 'pointer' }}><Icon name="x" size={18} style={{ color: '#fff' }}/></button>
+        <div style={{ flex: 1, textAlign: 'center' }}>
+          <div style={{ fontSize: 13, fontWeight: 700 }}>{full}</div>
+          <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.7)' }}>Langkah {idx+1} dari 3 · GPS terkunci 8 m</div>
+        </div>
+        <span style={{ padding: '3px 8px', borderRadius: 4, background: 'var(--pg-risk)', color: '#fff', fontSize: 11, fontWeight: 700 }}>● REC</span>
+      </header>
+      <div style={{ flex: 1, position: 'relative', background: '#1a2520', overflow: 'hidden' }}>
+        <div className="pg-raster-stub" data-layer={`viewfinder · ${phase}`} style={{ position: 'absolute', inset: 0 }}/>
+        {/* Crosshair / framing guide */}
+        <svg width="100%" height="100%" style={{ position: 'absolute', inset: 0, pointerEvents: 'none' }}>
+          <rect x="10%" y="14%" width="80%" height="62%" stroke="rgba(255,255,255,0.5)" strokeWidth="1.5" strokeDasharray="6 4" fill="none"/>
+          <line x1="50%" y1="14%" x2="50%" y2="76%" stroke="rgba(255,255,255,0.3)" strokeWidth="0.8"/>
+          <line x1="10%" y1="45%" x2="90%" y2="45%" stroke="rgba(255,255,255,0.3)" strokeWidth="0.8"/>
+        </svg>
+        {/* GPS / timestamp overlay (will be sealed into the image) */}
+        <div style={{ position: 'absolute', top: 14, left: 14, padding: '6px 10px', background: 'rgba(0,0,0,0.55)', color: '#fff', borderRadius: 6, fontSize: 11, fontFamily: 'var(--pg-font-mono)', display: 'flex', alignItems: 'center', gap: 6 }}>
+          <Icon name="pin" size={12}/>−2.341°S 113.91°E · ±8m
+        </div>
+        <div style={{ position: 'absolute', top: 14, right: 14, padding: '6px 10px', background: 'rgba(0,0,0,0.55)', color: '#fff', borderRadius: 6, fontSize: 11, fontFamily: 'var(--pg-font-mono)' }}>
+          {new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })} WIB
+        </div>
+        <div style={{ position: 'absolute', bottom: 24, left: 24, right: 24, padding: 12, background: 'rgba(0,0,0,0.55)', color: '#fff', borderRadius: 10 }}>
+          <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--pg-gold)', letterSpacing: 0.08, marginBottom: 4 }}>{tag}</div>
+          <div style={{ fontSize: 13, lineHeight: 1.45 }}>{hint}</div>
+        </div>
+        {flashing && <div style={{ position: 'absolute', inset: 0, background: '#fff', opacity: 0.85, animation: 'none' }}/>}
+      </div>
+      <div style={{ padding: '14px 16px', background: '#000', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <div style={{ display: 'flex', gap: 6 }}>
+          {[0,1,2].map(i => (
+            <div key={i} style={{ width: 32, height: 32, borderRadius: 6, background: i < idx ? 'var(--pg-accent)' : i === idx ? 'rgba(255,255,255,0.2)' : 'rgba(255,255,255,0.08)', display: 'grid', placeItems: 'center' }}>
+              {i < idx && <Icon name="check" size={14} style={{ color: '#fff' }} stroke={2.5}/>}
+              {i === idx && <span style={{ width: 6, height: 6, borderRadius: 3, background: 'var(--pg-gold)', animation: 'pulse 1s infinite' }}/>}
+            </div>
+          ))}
+        </div>
+        <button onClick={handleCapture} style={{ width: 76, height: 76, borderRadius: 38, background: '#fff', border: '5px solid rgba(255,255,255,0.4)', cursor: 'pointer', display: 'grid', placeItems: 'center' }}>
+          <span style={{ width: 60, height: 60, borderRadius: 30, background: 'var(--pg-risk)', display: 'block' }}/>
+        </button>
+        <button style={{ width: 38, height: 38, borderRadius: 19, background: 'rgba(255,255,255,0.15)', border: 'none', cursor: 'pointer', display: 'grid', placeItems: 'center' }}><Icon name="mic" size={16} style={{ color: '#fff' }}/></button>
+      </div>
+      <MobIndicator/>
+      <style>{`@keyframes pulse{0%,100%{opacity:1}50%{opacity:0.4}}`}</style>
+    </MobShell>
+  );
+}
+
+function ReviewScreen({ task, onBack, onSubmit }) {
+  return (
+    <MobShell>
+      <MobHeader title="Kirim untuk ditinjau" sub="Periksa sebelum dikirim" onBack={onBack}/>
+      <div style={{ flex: 1, overflow: 'auto', padding: 16, display: 'flex', flexDirection: 'column', gap: 14 }}>
+        <Card pad={14}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <span style={{ width: 36, height: 36, borderRadius: 10, background: 'var(--pg-accent-soft)', color: 'var(--pg-accent)', display: 'grid', placeItems: 'center' }}><Icon name="shield" size={18}/></span>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 14, fontWeight: 700 }}>{task.title}</div>
+              <div style={{ fontSize: 12, color: 'var(--pg-ink-muted)' }}>Bayaran <b style={{ fontFamily: 'var(--pg-font-mono)' }}>Rp {task.amt.toLocaleString('id-ID')}</b></div>
+            </div>
+            <Chip tone="success" size="sm">Siap</Chip>
+          </div>
+        </Card>
+        <div>
+          <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8 }}>Foto bertag GPS ({task.photos.length}/3)</div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 8 }}>
+            {['sebelum','sedang','sesudah'].map((p,i) => {
+              const ph = task.photos[i];
+              return (
+                <div key={p} style={{ position: 'relative' }}>
+                  <div className="pg-raster-stub" data-layer={`P-0${i+1}`} style={{ aspectRatio: '1', borderRadius: 10, opacity: ph ? 1 : 0.3 }}/>
+                  <div style={{ position: 'absolute', bottom: 4, left: 4, right: 4, fontSize: 10, fontFamily: 'var(--pg-font-mono)', color: '#fff', background: 'rgba(0,0,0,0.55)', padding: '2px 4px', borderRadius: 4, textAlign: 'center' }}>
+                    {ph ? `${p} ${new Date(ph.ts).toLocaleTimeString('id-ID',{hour:'2-digit',minute:'2-digit'})}` : '—'}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+        <Card pad={14}>
+          <div style={{ fontSize: 12.5, fontWeight: 700, marginBottom: 10 }}>Bukti otomatis (tersegel ke setiap foto)</div>
+          {[
+            ['GPS terkunci', task.photos[0]?.gps ? `${task.photos[0].gps.acc.toFixed(1)} m offset` : '—', true],
+            ['Waktu di jendela kerja', task.photos.length === 3 ? `${new Date(task.photos[0].ts).toLocaleTimeString('id-ID',{hour:'2-digit',minute:'2-digit'})} → ${new Date(task.photos[2].ts).toLocaleTimeString('id-ID',{hour:'2-digit',minute:'2-digit'})}` : '—', task.photos.length === 3],
+            ['Foto tersegel (sha256)', `rantai utuh, ${task.photos.length} foto`, task.photos.length === 3],
+            ['Track dam', '24.1 m linear', true],
+          ].map(([l,v,ok]) => (
+            <div key={l} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '6px 0', fontSize: 12.5 }}>
+              <span style={{ width: 18, height: 18, borderRadius: 9, background: ok ? 'var(--pg-accent-soft)' : 'var(--pg-surface-sunken)', color: ok ? 'var(--pg-accent)' : 'var(--pg-ink-muted)', display: 'grid', placeItems: 'center' }}><Icon name={ok ? 'check' : 'x'} size={11} stroke={2.5}/></span>
+              <span style={{ flex: 1 }}>{l}</span>
+              <span style={{ fontSize: 11, color: 'var(--pg-ink-muted)', fontFamily: 'var(--pg-font-mono)' }}>{v}</span>
+            </div>
+          ))}
+        </Card>
+        <Card pad={14} style={{ background: 'var(--pg-accent-soft)', border: 'none' }}>
+          <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+            <Icon name="info" size={16} style={{ color: 'var(--pg-accent)', marginTop: 2 }}/>
+            <div style={{ fontSize: 12.5, color: '#2d6e44', lineHeight: 1.45 }}>
+              <b>Tidak ada sinyal?</b> Kiriman akan disimpan di HP dan otomatis terupload saat dapat sinyal lagi.
+            </div>
+          </div>
+        </Card>
+      </div>
+      <div style={{ padding: '12px 16px 8px', background: 'var(--pg-surface-raised)', borderTop: '1px solid var(--pg-border)', display: 'flex', gap: 10 }}>
+        <Btn kind="secondary" size="lg">Tunda</Btn>
+        <Btn kind="primary" size="lg" full icon="upload" onClick={onSubmit}>Kirim untuk ditinjau</Btn>
+      </div>
+      <MobIndicator/>
+    </MobShell>
+  );
+}
+
+function SubmittedScreen({ task, onHome }) {
+  return (
+    <MobShell>
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', padding: 32, textAlign: 'center', gap: 18 }}>
+        <div style={{ width: 96, height: 96, borderRadius: 48, background: 'var(--pg-accent-soft)', color: 'var(--pg-accent)', display: 'grid', placeItems: 'center' }}>
+          <Icon name="check" size={48} stroke={2.5}/>
+        </div>
+        <div>
+          <div style={{ fontSize: 22, fontWeight: 700, letterSpacing: -0.02 }}>Terkirim untuk ditinjau</div>
+          <div style={{ fontSize: 13.5, color: 'var(--pg-ink-secondary)', marginTop: 8, lineHeight: 1.5, maxWidth: 280 }}>
+            Operator akan memeriksa foto dan track GPS Anda. Bayaran <b>Rp {task.amt.toLocaleString('id-ID')}</b> akan dilepas setelah disetujui (biasanya &lt; 1 jam).
+          </div>
+        </div>
+        <Card pad={14} style={{ width: '100%' }}>
+          <div style={{ fontSize: 11, color: 'var(--pg-ink-muted)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.06, marginBottom: 8 }}>Status</div>
+          <div style={{ display: 'flex', gap: 6 }}>
+            {['Diterima','Foto','Dikirim','Ditinjau','Dibayar'].map((s, i) => (
+              <div key={s} style={{ flex: 1, textAlign: 'center' }}>
+                <div style={{ height: 4, borderRadius: 2, background: i <= 2 ? 'var(--pg-accent)' : 'var(--pg-border)', marginBottom: 6 }}/>
+                <div style={{ fontSize: 10, color: i <= 2 ? 'var(--pg-accent)' : 'var(--pg-ink-muted)', fontWeight: 600 }}>{s}</div>
+              </div>
+            ))}
+          </div>
+        </Card>
+        <Btn kind="primary" size="lg" full onClick={onHome}>Lihat bayaran</Btn>
+      </div>
+      <MobIndicator/>
+    </MobShell>
+  );
+}
+
+function WalletScreen({ tasks, onTab }) {
+  const submittedSum = tasks.filter(t => t.status === 'submitted').reduce((s, t) => s + t.amt, 0);
+  const earnedSum = EARNED.filter(e => e.ok === true).reduce((s, e) => s + e.amt, 0);
+  return (
+    <MobShell>
+      <div style={{ background: 'var(--pg-primary)', color: '#fff', padding: '20px 18px 28px', borderRadius: '0 0 24px 24px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 18 }}>
+          <div style={{ fontSize: 14, fontWeight: 700 }}>Bayaran Anda</div>
+          <Icon name="history" size={20}/>
+        </div>
+        <div style={{ fontSize: 12.5, opacity: 0.85 }}>Total disetujui</div>
+        <div style={{ fontSize: 32, fontWeight: 700, fontFamily: 'var(--pg-font-mono)', letterSpacing: -0.02, marginTop: 4 }}>Rp {earnedSum.toLocaleString('id-ID')}</div>
+        <div style={{ display: 'flex', gap: 16, marginTop: 12, fontSize: 12 }}>
+          <div><div style={{ opacity: 0.75 }}>Bulan ini</div><div style={{ fontWeight: 700, fontFamily: 'var(--pg-font-mono)', marginTop: 2 }}>Rp {(earnedSum*0.78|0).toLocaleString('id-ID')}</div></div>
+          <div style={{ width: 1, background: 'rgba(255,255,255,0.18)' }}/>
+          <div><div style={{ opacity: 0.75 }}>Menunggu review</div><div style={{ fontWeight: 700, fontFamily: 'var(--pg-font-mono)', marginTop: 2 }}>Rp {submittedSum.toLocaleString('id-ID')}</div></div>
+        </div>
+        <div style={{ display: 'flex', gap: 8, marginTop: 16 }}>
+          <Btn kind="gold" size="lg" full icon="download2">Tarik ke DANA</Btn>
+        </div>
+      </div>
+      <div style={{ flex: 1, overflow: 'auto', padding: 16 }}>
+        <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 10 }}>Riwayat tugas</div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {tasks.filter(t => t.status === 'submitted').map(t => (
+            <div key={t.id} style={{ padding: 12, background: 'var(--pg-gold-soft)', border: '1px solid var(--pg-gold)', borderRadius: 12, display: 'flex', alignItems: 'center', gap: 12 }}>
+              <span style={{ width: 36, height: 36, borderRadius: 18, background: 'var(--pg-gold)', color: '#fff', display: 'grid', placeItems: 'center' }}><Icon name="clock" size={16}/></span>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 13, fontWeight: 600 }}>{t.title}</div>
+                <div style={{ fontSize: 11.5, color: 'var(--pg-ink-muted)' }}>menunggu review operator · {t.photos.length} foto</div>
+              </div>
+              <div style={{ fontFamily: 'var(--pg-font-mono)', fontWeight: 700 }}>Rp {(t.amt/1000).toFixed(0)}rb</div>
+            </div>
+          ))}
+          {EARNED.map(it => (
+            <div key={it.id} style={{ padding: 12, background: 'var(--pg-surface-raised)', border: '1px solid var(--pg-border)', borderRadius: 12, display: 'flex', alignItems: 'center', gap: 12 }}>
+              <span style={{ width: 36, height: 36, borderRadius: 18, background: 'var(--pg-accent-soft)', color: 'var(--pg-accent)', display: 'grid', placeItems: 'center' }}><Icon name="check" size={16}/></span>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 13, fontWeight: 600 }}>{it.t}</div>
+                <div style={{ fontSize: 11.5, color: 'var(--pg-ink-muted)' }}>{it.d} · masuk DANA · 47 dtk</div>
+              </div>
+              <div style={{ fontFamily: 'var(--pg-font-mono)', fontWeight: 700 }}>Rp {(it.amt/1000).toFixed(0)}rb</div>
+            </div>
+          ))}
+        </div>
+      </div>
+      <TabBar active="wallet" onTab={onTab}/>
+      <MobIndicator/>
+    </MobShell>
+  );
+}
+
+function MessagesScreen({ onTab, onBack }) {
+  return (
+    <MobShell>
+      <MobHeader title="Pesan" sub="Operator · Sistem" onBack={onBack}/>
+      <div style={{ flex: 1, padding: 16, display: 'flex', flexDirection: 'column', gap: 10, overflow: 'auto' }}>
+        <div style={{ alignSelf: 'center', fontSize: 11, color: 'var(--pg-ink-muted)', padding: '3px 10px', background: 'var(--pg-surface-sunken)', borderRadius: 99 }}>Hari ini</div>
+        <div style={{ alignSelf: 'flex-start', maxWidth: '78%', padding: '9px 13px', background: 'var(--pg-surface-raised)', border: '1px solid var(--pg-border)', borderRadius: 14, fontSize: 13 }}>Pak Sumardi, foto Anda sangat jelas. Saya release bayaran sekarang.</div>
+        <div style={{ alignSelf: 'center', maxWidth: '85%', padding: '10px 14px', background: 'var(--pg-accent-soft)', color: '#2d6e44', borderRadius: 12, fontSize: 12.5, display: 'flex', alignItems: 'center', gap: 8 }}><Icon name="check" size={14}/>Bayaran Rp 250.000 dilepas</div>
+      </div>
+      <TabBar active="msg" onTab={onTab}/>
+      <MobIndicator/>
+    </MobShell>
+  );
+}
+
+function ProfileScreen({ onTab, onBack }) {
+  return (
+    <MobShell>
+      <MobHeader title="Profil saya" onBack={onBack}/>
+      <div style={{ flex: 1, overflow: 'auto', padding: 16, display: 'flex', flexDirection: 'column', gap: 14 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10, padding: '20px 0' }}>
+          <div style={{ width: 88, height: 88, borderRadius: 44, background: 'linear-gradient(135deg,#3d2818,#c89b3c)', color: '#fff', display: 'grid', placeItems: 'center', fontWeight: 700, fontSize: 26 }}>SB</div>
+          <div style={{ textAlign: 'center' }}>
+            <div style={{ fontSize: 18, fontWeight: 700 }}>Sumardi Budiman</div>
+            <div style={{ fontSize: 12, color: 'var(--pg-ink-muted)' }}>Hampangen Jaya · sejak Feb 2025</div>
+          </div>
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'center' }}>
+            <Chip tone="success" size="sm">NIK terverifikasi</Chip>
+            <Chip tone="primary" size="sm">★ 4.8</Chip>
+          </div>
+        </div>
+        <Card pad={0} style={{ overflow: 'hidden' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)' }}>
+            {[['38','tugas selesai'],['95%','tingkat lolos'],['8.7jt','total bayaran']].map(([v,l],i) => (
+              <div key={l} style={{ padding: 16, textAlign: 'center', borderRight: i < 2 ? '1px solid var(--pg-border)' : 'none' }}>
+                <div style={{ fontSize: 18, fontWeight: 700, fontFamily: 'var(--pg-font-mono)' }}>{v}</div>
+                <div style={{ fontSize: 11, color: 'var(--pg-ink-muted)', marginTop: 2 }}>{l}</div>
+              </div>
+            ))}
+          </div>
+        </Card>
+      </div>
+      <TabBar active="me" onTab={onTab}/>
+      <MobIndicator/>
+    </MobShell>
+  );
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// Web prototype — clickable sidebar nav between the 9 screens
+// ──────────────────────────────────────────────────────────────────────
+function WebPrototype() {
+  const [screen, setScreen] = React.useState('home');
+  const screens = {
+    login: <W1_Login/>,
+    home: <W2_Dashboard/>,
+    map: <W3_MapView/>,
+    tasks: <W4_TaskCreator/>,
+    validate: <W5_Validation/>,
+    pay: <W6_Payments/>,
+    workers: <W7_Workers/>,
+    reports: <W8_Reports/>,
+    settings: <W9_Settings/>,
+  };
+  return (
+    <div>
+      <div className="frame-label">
+        <span>🖥️ Web · Nadia (operator) · PeatGuard Kalimantan</span>
+        <button className="reset-btn" onClick={() => setScreen('login')}>↻ Start at login</button>
+        <span style={{ marginLeft: 'auto', fontFamily: 'ui-monospace,monospace' }}>{screen}</span>
+      </div>
+      <div className="frame" style={{ width: '100%', maxWidth: 1440 }}>
+        <div style={{ position: 'relative', width: '100%', aspectRatio: '1440/900', overflow: 'hidden' }}>
+          <div style={{ position: 'absolute', inset: 0, transformOrigin: 'top left', transform: 'scale(var(--scale,1))', width: 1440, height: 900 }} ref={el => {
+            if (!el) return;
+            const ro = new ResizeObserver(() => {
+              const w = el.parentElement.clientWidth;
+              el.style.setProperty('--scale', w / 1440);
+            });
+            ro.observe(el.parentElement);
+          }}>
+            {screens[screen]}
+          </div>
+          {/* Click-trapping overlay on the sidebar so nav works via screen change */}
+          <div style={{ position: 'absolute', top: 0, left: 0, width: 'calc(232px * var(--scale,1))', bottom: 0, display: 'flex', flexDirection: 'column' }}>
+            <div style={{ height: 'calc(110px * var(--scale,1))' }}/>{/* logo + workspace */}
+            {[
+              ['home','AOI Dashboard'],
+              ['map','Map view'],
+              ['tasks','Tasks'],
+              ['validate','Validation'],
+              ['pay','Payments'],
+              ['workers','Workers'],
+              ['reports','Reports'],
+              ['settings','Settings'],
+            ].map(([id]) => (
+              <button key={id} onClick={() => setScreen(id)} title={id} style={{ height: 'calc(38px * var(--scale,1))', width: '100%', background: 'transparent', border: 'none', cursor: 'pointer' }}/>
+            ))}
+          </div>
+        </div>
+      </div>
+      <div style={{ marginTop: 10, display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+        {[
+          ['login','01 Login'],['home','02 Dashboard'],['map','03 Map'],['tasks','04 Task creator'],
+          ['validate','05 Validation'],['pay','06 Payments'],['workers','07 Workers'],['reports','08 Reports'],['settings','09 Settings'],
+        ].map(([id, label]) => (
+          <button key={id} onClick={() => setScreen(id)} style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid', borderColor: screen === id ? 'var(--pg-primary)' : 'rgba(0,0,0,0.1)', background: screen === id ? 'var(--pg-primary)' : '#fff', color: screen === id ? '#fff' : 'rgba(40,30,20,0.85)', fontSize: 11.5, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit' }}>{label}</button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ── App root ────────────────────────────────────────────────────────────
+function App() {
+  React.useEffect(() => { applyPalette('forest', false); }, []);
+  return (
+    <div className="stage">
+      <WebPrototype/>
+      <MobilePrototype/>
+    </div>
+  );
+}
+
+applyPalette('forest', false);
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+</script>
+</body>
+</html>

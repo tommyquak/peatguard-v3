@@ -1,0 +1,469 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>PeatGuard · Operator + Villager apps</title>
+<style>
+  html,body { margin: 0; background: #f0eee9; }
+</style>
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+<script type="text/babel" src="tokens.jsx"></script>
+<script type="text/babel" src="design-canvas.jsx"></script>
+<script type="text/babel" src="android-frame.jsx"></script>
+<script type="text/babel" src="tweaks-panel.jsx"></script>
+<script type="text/babel" src="components.jsx"></script>
+<script type="text/babel" src="web-screens-1.jsx"></script>
+<script type="text/babel" src="web-screens-2.jsx"></script>
+<script type="text/babel" src="mobile-screens.jsx"></script>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel" data-presets="env,react">
+const PG_DEFAULTS = /*EDITMODE-BEGIN*/{
+  "palette": "forest",
+  "showRationale": true,
+  "showWeb": true,
+  "showMobile": true,
+  "showLibrary": true
+}/*EDITMODE-END*/;
+
+function Rationale() {
+  const Block = ({ n, title, children }) => (
+    <div style={{ display: 'grid', gridTemplateColumns: '40px 1fr', gap: 14, padding: '14px 0', borderTop: '1px solid var(--pg-border)' }}>
+      <div style={{ fontFamily: 'var(--pg-font-mono)', fontSize: 11, color: 'var(--pg-ink-muted)', paddingTop: 3 }}>{n}</div>
+      <div>
+        <div style={{ fontSize: 14.5, fontWeight: 700, marginBottom: 6 }}>{title}</div>
+        <div style={{ fontSize: 13, lineHeight: 1.55, color: 'var(--pg-ink-secondary)' }}>{children}</div>
+      </div>
+    </div>
+  );
+  return (
+    <div className="pg-scope" style={{ width: 1440, padding: '32px 40px', background: 'var(--pg-surface-raised)', color: 'var(--pg-ink)' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: '1.4fr 1fr', gap: 40 }}>
+        <div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 18 }}>
+            <Logomark size={32}/>
+            <span style={{ fontSize: 12, fontFamily: 'var(--pg-font-mono)', color: 'var(--pg-ink-muted)', textTransform: 'uppercase', letterSpacing: 0.08 }}>Design Rationale · v0.1 · 8 May 2026</span>
+          </div>
+          <h1 style={{ fontSize: 38, fontWeight: 600, letterSpacing: -0.025, lineHeight: 1.1, maxWidth: 720 }}>
+            Two surfaces, one ledger. Satellite priority on one end; a pair of muddy hands on the other.
+          </h1>
+          <p style={{ fontSize: 15, color: 'var(--pg-ink-secondary)', lineHeight: 1.55, marginTop: 18, maxWidth: 660 }}>
+            PeatGuard is a payment-rail-on-top-of-science product. The science already works (V4 outputs ship 11 GeoTIFF layers). The hard
+            unsolved problem is the trust loop between a desk officer who reads canal-risk rasters and a villager standing in mud at canal C-04
+            with a phone that has 2 bars of 3G. This document explains the design choices we made to close that loop.
+          </p>
+        </div>
+        <div style={{ background: 'var(--pg-primary-soft)', border: '1px solid var(--pg-primary)', borderRadius: 12, padding: 18 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--pg-primary)', textTransform: 'uppercase', letterSpacing: 0.08, marginBottom: 10 }}>Headline decisions</div>
+          <ul style={{ margin: 0, paddingLeft: 16, fontSize: 12.5, lineHeight: 1.7, color: 'var(--pg-ink)' }}>
+            <li>Forest-green primary — not peat-brown ({`see pushback #1`}).</li>
+            <li>Two apps, with a 3rd surface noted but not designed.</li>
+            <li>Indonesian copy is the design baseline on mobile.</li>
+            <li>Photo evidence + GPS + sealed hash is the trust contract.</li>
+            <li>Money is visible on every mobile screen. Always.</li>
+            <li>Map UI shows ≤3 layers at once. Mobile shows one.</li>
+            <li>WCAG AA on web; AAA-where-feasible on mobile.</li>
+          </ul>
+        </div>
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 32, marginTop: 32 }}>
+        <section>
+          <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--pg-primary)', textTransform: 'uppercase', letterSpacing: 0.08, marginBottom: 6 }}>Why two apps</div>
+          <h2 style={{ fontSize: 20, fontWeight: 600, marginBottom: 12 }}>Different bodies. Different gloves on. Same ledger.</h2>
+          <Block n="01" title="Operator surface (desktop, indoors, fast net)">
+            Heavy maps, multi-tenant programmes, batch validation, payment rails, exports for donors and KLHK. Density matters; we use a
+            232px sidebar and a left-rail layer panel because operators will pivot between AOI, Tasks, Validation and Payments dozens of
+            times a day. Default font Inter; mono for coordinates and numbers.
+          </Block>
+          <Block n="02" title="Villager surface (Android-first, outdoors, mud)">
+            Bottom-of-screen primary CTAs reach a one-handed thumb. Iconography is rounded + always labelled in Bahasa. Photo capture is
+            guided ("ambil foto sebelum") not free-form, so the operator's validation queue is consistent. Offline-first with a queued
+            upload model.
+          </Block>
+          <Block n="03" title="The shared ledger">
+            Every task carries the same shape on both sides: <span className="pg-mono" style={{ background: 'var(--pg-surface-sunken)', padding: '1px 5px', borderRadius: 4 }}>{`{aoi, polygon, type, payout_idr, deliverables, deadline, status}`}</span>.
+            Status transitions are a 5-state finite machine: Available → Accepted → Submitted → Approved | Revision → Paid. The mobile
+            app, the validation queue and the payment dashboard are three views of one row in that table.
+          </Block>
+        </section>
+        <section>
+          <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--pg-primary)', textTransform: 'uppercase', letterSpacing: 0.08, marginBottom: 6 }}>Three pushbacks</div>
+          <h2 style={{ fontSize: 20, fontWeight: 600, marginBottom: 12 }}>Things in the brief I'd argue against.</h2>
+          <Block n="01" title="Peat-brown as primary chrome → push to forest-green">
+            Brown reads as <i>muddy</i> on small Android screens in sunlight, and tests poorly with rural Indonesian users when paired with
+            money UI: the closest cultural reference is wet earth, not value. Bank Mandiri (which you cited) uses a deep institutional blue.
+            We keep peat-brown as a heritage accent (the gradient under avatars, the &laquo;cohort&raquo; raster legend) and lift forest-green
+            <span className="pg-mono"> #1f4d3a</span> to primary. Toggle the palette in Tweaks to compare.
+          </Block>
+          <Block n="02" title="Photo blur score as an auto-check → demote to advisory">
+            Auto-rejecting on blur is dangerous in canopy with cheap cameras. Make blur a <b>flag</b> (operator sees it, operator decides),
+            not an auto-fail. Same for photo timestamps within a window: dam-installation can take 4 hours; rigid windows produce false
+            rejects. Move strict checks to GPS-at-location only.
+          </Block>
+          <Block n="03" title="Operator suspends a worker with one click → add a 14-day appeal">
+            'Suspend' on the worker screen as briefed is a one-way door. For a livelihood product, this is operationally and ethically
+            wrong. We added a 14-day cooling-off appeal lane and a required reason code from a fixed list. Suspending without a code is
+            not allowed in the UI.
+          </Block>
+        </section>
+      </div>
+
+      <div style={{ marginTop: 40, padding: 24, background: 'var(--pg-surface-sunken)', borderRadius: 12 }}>
+        <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--pg-primary)', textTransform: 'uppercase', letterSpacing: 0.08, marginBottom: 10 }}>Two flow diagrams</div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 24 }}>
+          <Flow title="Operator end-to-end" steps={[
+            ['SSO sign-in','programme picker'],
+            ['AOI dashboard','priority tile'],
+            ['Map view','toggle 2-3 layers'],
+            ['Draw polygon','snap to canal_mask'],
+            ['Task modal','set payout, deadline'],
+            ['Publish','→ mobile app'],
+            ['Validation queue','before/after slider'],
+            ['Approve','releases payment'],
+            ['Reports','monthly auto-PDF'],
+          ]}/>
+          <Flow title="Villager end-to-end" steps={[
+            ['Open app','offline OK'],
+            ['Home/Map','gold = available'],
+            ['Task detail','plain Bahasa'],
+            ['Accept','offline cached'],
+            ['Navigate','offline routing'],
+            ['"I\u2019m here"','GPS-confirmed'],
+            ['Guided photos','3 frames + GPS'],
+            ['Submit','queued if offline'],
+            ['Pay-in','DANA in ~1 min'],
+          ]}/>
+        </div>
+      </div>
+
+      <div style={{ marginTop: 40, padding: 24, background: 'var(--pg-surface-raised)', border: '1px solid var(--pg-border)', borderRadius: 12 }}>
+        <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--pg-primary)', textTransform: 'uppercase', letterSpacing: 0.08, marginBottom: 10 }}>Accessibility audit · WCAG AA target</div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 16, fontSize: 12.5, lineHeight: 1.55 }}>
+          {[
+            ['Contrast','All text ≥ 4.5:1 on light surfaces, 3:1 for ≥18px. Forest #1f4d3a on #ffffff = 9.7:1. Risk #b3261e on #fae8e6 = 4.6:1.'],
+            ['Touch targets','Mobile primary CTAs ≥ 48dp. Tab bar items ≥ 56dp. Pin labels are advisory only — the tap target is the whole row card.'],
+            ['Iconography','Never icon-only on mobile. Bahasa label under every icon. Tab bar uses pill-on-active not color-only.'],
+            ['Type scale','Inter / Noto Sans 400-700 only. Min size 12px desktop, 13px mobile. 200% browser zoom is layout-tested.'],
+            ['Motion','Respects prefers-reduced-motion. Map pan/zoom uses CSS transforms only; no autoplay video.'],
+            ['Form inputs','Every input has a visible label. Error states use icon + color + text, never color alone.'],
+            ['Localization','Layouts tested at +35% string length (Bahasa). No truncation on primary CTAs.'],
+            ['Screen reader','Map regions exposed via aria-label. Photo evidence uses descriptive alts written by the operator.'],
+            ['Dark mode','Mobile screens 2/4/5 ship dark. Sun-glare-tested low-blue palette; pure-white avoided.'],
+          ].map(([t, d]) => (
+            <div key={t} style={{ padding: '10px 12px', border: '1px solid var(--pg-border)', borderRadius: 8 }}>
+              <div style={{ fontWeight: 700, marginBottom: 3 }}>{t}</div>
+              <div style={{ color: 'var(--pg-ink-secondary)' }}>{d}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div style={{ marginTop: 24, padding: '14px 18px', background: 'var(--pg-gold-soft)', borderRadius: 10, fontSize: 12.5, color: '#5a3e00', display: 'flex', gap: 12 }}>
+        <Icon name="info" size={16}/>
+        <div>
+          <b>Note on the third surface.</b> Literate field operators (BRGM officers in pickups) are real users. We did not design a 3rd app.
+          The recommendation is to make the web operator app responsive at 768–1024px so it works on a 10″ tablet in a truck — leaning on the
+          existing Validation queue + Map view with a touch-tuned drawing tool. Build it after the field-pilot in Sebangau.
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Flow({ title, steps }) {
+  return (
+    <div>
+      <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 10 }}>{title}</div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+        {steps.map(([t, sub], i) => (
+          <div key={t} style={{ display: 'grid', gridTemplateColumns: '36px 1fr auto', alignItems: 'center', gap: 10, padding: '10px 12px', background: 'var(--pg-surface-raised)', border: '1px solid var(--pg-border)', borderRadius: 8 }}>
+            <span style={{ width: 26, height: 26, borderRadius: 13, background: i === steps.length - 1 ? 'var(--pg-accent)' : 'var(--pg-primary)', color: '#fff', display: 'grid', placeItems: 'center', fontSize: 11, fontWeight: 700 }}>{i + 1}</span>
+            <span style={{ fontSize: 13, fontWeight: 600 }}>{t}</span>
+            <span style={{ fontSize: 11.5, color: 'var(--pg-ink-muted)', fontFamily: 'var(--pg-font-mono)' }}>{sub}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ─── Component library showcase ──────────────────────────────────────────
+function Library() {
+  return (
+    <div className="pg-scope" style={{ width: 1440, padding: '32px 40px', background: 'var(--pg-surface)', color: 'var(--pg-ink)' }}>
+      <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', marginBottom: 22 }}>
+        <div>
+          <div style={{ fontSize: 12, fontFamily: 'var(--pg-font-mono)', color: 'var(--pg-ink-muted)', textTransform: 'uppercase', letterSpacing: 0.08 }}>Component library</div>
+          <h2 style={{ fontSize: 30, fontWeight: 600, letterSpacing: -0.02, marginTop: 4 }}>The kit, in one page.</h2>
+        </div>
+        <div style={{ fontSize: 12.5, color: 'var(--pg-ink-secondary)', maxWidth: 360, textAlign: 'right' }}>
+          All components consume CSS custom props from <span className="pg-mono">tokens.jsx</span>. Toggle palettes from the Tweaks panel to see them
+          re-tint live.
+        </div>
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 20 }}>
+        <LibBlock title="Buttons">
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <Btn kind="primary">Publish task</Btn>
+            <Btn kind="secondary">Cancel</Btn>
+            <Btn kind="ghost">Skip</Btn>
+            <Btn kind="soft">Draft</Btn>
+            <Btn kind="success" icon="check">Approve</Btn>
+            <Btn kind="danger" icon="x">Reject</Btn>
+            <Btn kind="gold" icon="download2">Tarik DANA</Btn>
+          </div>
+          <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
+            <Btn kind="primary" size="sm">sm</Btn>
+            <Btn kind="primary" size="md">md</Btn>
+            <Btn kind="primary" size="lg" icon="upload">lg with icon</Btn>
+          </div>
+        </LibBlock>
+
+        <LibBlock title="Status chips">
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+            <Chip tone="primary">Active</Chip>
+            <Chip tone="success">Approved</Chip>
+            <Chip tone="risk">Critical risk</Chip>
+            <Chip tone="warn">Pending</Chip>
+            <Chip tone="gold">Available</Chip>
+            <Chip tone="info">Patrol</Chip>
+            <Chip tone="neutral">Draft</Chip>
+          </div>
+        </LibBlock>
+
+        <LibBlock title="Stats">
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 18 }}>
+            <Stat label="Hectares restored YTD" value="412 ha" delta="+47" sub="vs Apr"/>
+            <Stat label="tCO₂/yr avoided" value="14,820"/>
+            <Stat label="Pending validations" value="14" delta="+3" deltaTone="risk" sub="last 24h"/>
+          </div>
+        </LibBlock>
+
+        <LibBlock title="Form fields">
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            <Input label="Work email" value="tommy.quak@peatguard.id" icon="user"/>
+            <Input label="Payout amount (IDR)" value="Rp 250.000" icon="coin"/>
+          </div>
+        </LibBlock>
+
+        <LibBlock title="Map controls">
+          <div style={{ display: 'flex', gap: 6, padding: 6, background: 'var(--pg-surface-raised)', border: '1px solid var(--pg-border)', borderRadius: 10, width: 'fit-content' }}>
+            {['polygon','pin','sliders','layers','search'].map(i => (
+              <button key={i} style={{ width: 36, height: 36, borderRadius: 6, background: i === 'polygon' ? 'var(--pg-primary-soft)' : 'transparent', color: i === 'polygon' ? 'var(--pg-primary)' : 'var(--pg-ink-secondary)', border: 'none', display: 'grid', placeItems: 'center' }}><Icon name={i} size={18}/></button>
+            ))}
+          </div>
+          <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+            <LayerSwatch label="canal_risk" tone="risk"/>
+            <LayerSwatch label="subsidence_velocity" tone="warn"/>
+            <LayerSwatch label="canal_mask" tone="primary"/>
+            <LayerSwatch label="peat_extent" tone="success"/>
+          </div>
+        </LibBlock>
+
+        <LibBlock title="Task pins (mobile)">
+          <div style={{ position: 'relative', height: 130, background: 'var(--pg-surface-sunken)', borderRadius: 10 }}>
+            <div style={{ position: 'absolute', top: 50, left: '15%' }}><PinDemo tone="gold" amt="Rp 250rb"/></div>
+            <div style={{ position: 'absolute', top: 50, left: '40%' }}><PinDemo tone="info" amt="Patroli"/></div>
+            <div style={{ position: 'absolute', top: 50, left: '65%' }}><PinDemo tone="success" amt="Selesai"/></div>
+            <div style={{ position: 'absolute', top: 50, left: '88%' }}><PinDemo tone="risk" amt="Urgent"/></div>
+          </div>
+        </LibBlock>
+
+        <LibBlock title="Photo evidence card">
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 6 }}>
+            {['sebelum 06:42','sedang 09:18','sesudah 11:53'].map((p,i) => (
+              <div key={p} style={{ position: 'relative' }}>
+                <div className="pg-raster-stub" data-layer={`P-0${i+1}`} style={{ aspectRatio: '1', borderRadius: 8 }}/>
+                <div style={{ position: 'absolute', bottom: 4, left: 4, right: 4, fontSize: 10, fontFamily: 'var(--pg-font-mono)', color: '#fff', background: 'rgba(0,0,0,0.55)', padding: '2px 4px', borderRadius: 4, textAlign: 'center' }}>{p}</div>
+              </div>
+            ))}
+          </div>
+        </LibBlock>
+
+        <LibBlock title="Payment card">
+          <div style={{ background: 'var(--pg-primary)', color: '#fff', borderRadius: 12, padding: 16 }}>
+            <div style={{ fontSize: 11.5, opacity: 0.8 }}>Total disetujui</div>
+            <div style={{ fontSize: 28, fontWeight: 700, fontFamily: 'var(--pg-font-mono)', letterSpacing: -0.02 }}>Rp 1.080.000</div>
+            <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+              <Btn kind="gold" size="md" full icon="download2">Tarik ke DANA</Btn>
+            </div>
+          </div>
+        </LibBlock>
+
+        <LibBlock title="Alerts">
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <Alert tone="risk" title="Velocity-confirmed canal — act this week" body="14.7 mm/yr subsidence within 30 m of canal mouth. Block now."/>
+            <Alert tone="warn" title="Photo blur score 0.71" body="Operator review required before approve."/>
+            <Alert tone="success" title="Payment released" body="Rp 250.000 to Sumardi via DANA · 47s"/>
+          </div>
+        </LibBlock>
+
+        <LibBlock title="Empty state">
+          <div style={{ padding: 24, border: '1px dashed var(--pg-border-strong)', borderRadius: 12, textAlign: 'center' }}>
+            <div style={{ width: 44, height: 44, borderRadius: 22, background: 'var(--pg-surface-sunken)', color: 'var(--pg-primary)', display: 'grid', placeItems: 'center', margin: '0 auto 10px' }}><Icon name="leaf" size={20}/></div>
+            <div style={{ fontSize: 14, fontWeight: 700 }}>No tasks ready in this AOI</div>
+            <div style={{ fontSize: 12, color: 'var(--pg-ink-muted)', marginTop: 2 }}>Next satellite refresh: 2026-05-12</div>
+          </div>
+        </LibBlock>
+
+        <LibBlock title="Color tokens (active palette)">
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 6 }}>
+            {[
+              ['primary','--pg-primary'],['accent','--pg-accent'],['gold','--pg-gold'],['risk','--pg-risk'],
+              ['peat','--pg-peat'],['surface','--pg-surface'],['surface-sunken','--pg-surface-sunken'],['border','--pg-border'],
+            ].map(([n, v]) => (
+              <div key={n} style={{ borderRadius: 8, overflow: 'hidden', border: '1px solid var(--pg-border)' }}>
+                <div style={{ height: 44, background: `var(${v})` }}/>
+                <div style={{ padding: '6px 8px', fontSize: 11 }}><div style={{ fontWeight: 700 }}>{n}</div><div className="pg-mono" style={{ color: 'var(--pg-ink-muted)' }}>{v}</div></div>
+              </div>
+            ))}
+          </div>
+        </LibBlock>
+
+        <LibBlock title="Type scale">
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            <div style={{ fontSize: 32, fontWeight: 600, letterSpacing: -0.02 }}>Display · 32/600</div>
+            <div style={{ fontSize: 22, fontWeight: 600 }}>Title · 22/600</div>
+            <div style={{ fontSize: 16, fontWeight: 600 }}>Heading · 16/600</div>
+            <div style={{ fontSize: 13.5 }}>Body · 13.5/400 — pebbles, the system reads peat-density rasters and emits a priority score per pixel.</div>
+            <div style={{ fontSize: 12, color: 'var(--pg-ink-muted)' }}>Caption · 12/400</div>
+            <div className="pg-mono" style={{ fontSize: 12 }}>Mono · canal_risk.tif · 0.71 · 14.7 mm/yr</div>
+          </div>
+        </LibBlock>
+      </div>
+    </div>
+  );
+}
+
+function LibBlock({ title, children }) {
+  return (
+    <Card pad={18}>
+      <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--pg-ink-muted)', textTransform: 'uppercase', letterSpacing: 0.08, marginBottom: 12 }}>{title}</div>
+      {children}
+    </Card>
+  );
+}
+
+function LayerSwatch({ label, tone }) {
+  const tones = { risk: 'var(--pg-risk)', warn: 'var(--pg-warn)', primary: 'var(--pg-primary)', success: 'var(--pg-accent)' };
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 10px 4px 6px', border: '1px solid var(--pg-border)', borderRadius: 99, fontSize: 12, fontWeight: 500 }}>
+      <span style={{ width: 14, height: 14, borderRadius: 4, background: tones[tone] }}/>
+      <span className="pg-mono" style={{ fontSize: 11 }}>{label}</span>
+    </div>
+  );
+}
+
+function PinDemo({ tone, amt }) {
+  const colors = { gold: 'var(--pg-gold)', info: 'var(--pg-info)', success: 'var(--pg-accent)', risk: 'var(--pg-risk)' };
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
+      <div style={{ padding: '3px 10px', background: colors[tone], color: tone === 'gold' ? '#1a1300' : '#fff', borderRadius: 999, fontSize: 11.5, fontWeight: 700, boxShadow: '0 2px 6px rgba(0,0,0,0.18)' }}>{amt}</div>
+      <div style={{ width: 0, height: 0, borderLeft: '5px solid transparent', borderRight: '5px solid transparent', borderTop: `7px solid ${colors[tone]}` }}/>
+    </div>
+  );
+}
+
+function Alert({ tone, title, body }) {
+  const map = {
+    risk: { bg: 'var(--pg-risk-soft)', fg: 'var(--pg-risk)', icon: 'warn' },
+    warn: { bg: '#fdf1d8', fg: '#7a4d00', icon: 'info' },
+    success: { bg: 'var(--pg-accent-soft)', fg: '#2d6e44', icon: 'check' },
+  }[tone];
+  return (
+    <div style={{ padding: 12, background: map.bg, borderRadius: 10, display: 'flex', gap: 10 }}>
+      <Icon name={map.icon} size={16} style={{ color: map.fg, flexShrink: 0, marginTop: 2 }}/>
+      <div style={{ fontSize: 12.5, color: map.fg, lineHeight: 1.45 }}>
+        <b>{title}.</b> {body}
+      </div>
+    </div>
+  );
+}
+
+// ─── App root ────────────────────────────────────────────────────────────
+function App() {
+  const [t, setTweak] = useTweaks(PG_DEFAULTS);
+  React.useEffect(() => { applyPalette(t.palette, false); }, [t.palette]);
+
+  const AndroidWrap = ({ children }) => (
+    <AndroidDevice><div style={{ width: '100%', height: '100%' }}>{children}</div></AndroidDevice>
+  );
+
+  return (
+    <DesignCanvas title="PeatGuard · Operator + Villager" subtitle="Satellite priority → paid restoration tasks · v0.1 · 8 May 2026">
+      {t.showRationale && (
+        <DCSection id="rationale" title="01 · Rationale, flows, audit, pushbacks" subtitle="Read first. Everything below is in service of this.">
+          <DCArtboard id="rationale-doc" label="Design rationale (1-pager)" width={1440} height={1820}><Rationale/></DCArtboard>
+        </DCSection>
+      )}
+
+      {t.showWeb && (
+        <DCSection id="web" title="02 · Web operator dashboard" subtitle="Desktop / 1440 × 900 · indoor, fast net · daily during planning weeks">
+          <DCArtboard id="w1" label="01 · Login + workspace switcher" width={1440} height={900}><W1_Login/></DCArtboard>
+          <DCArtboard id="w2" label="02 · AOI dashboard (home)" width={1440} height={900}><W2_Dashboard/></DCArtboard>
+          <DCArtboard id="w3" label="03 · AOI deep-dive map" width={1440} height={900}><W3_MapView/></DCArtboard>
+          <DCArtboard id="w4" label="04 · Task creator (modal)" width={1440} height={900}><W4_TaskCreator/></DCArtboard>
+          <DCArtboard id="w5" label="05 · Validation queue" width={1440} height={900}><W5_Validation/></DCArtboard>
+          <DCArtboard id="w6" label="06 · Payments dashboard" width={1440} height={900}><W6_Payments/></DCArtboard>
+          <DCArtboard id="w7" label="07 · Worker management" width={1440} height={900}><W7_Workers/></DCArtboard>
+          <DCArtboard id="w8" label="08 · Reports & impact" width={1440} height={900}><W8_Reports/></DCArtboard>
+          <DCArtboard id="w9" label="09 · Programme settings" width={1440} height={900}><W9_Settings/></DCArtboard>
+        </DCSection>
+      )}
+
+      {t.showMobile && (
+        <DCSection id="mobile" title="03 · Mobile villager app" subtitle="Android-first / 393 × 852 · outdoors, 3G/4G · Bahasa Indonesia · light + dark on screens 2/4/5">
+          <DCArtboard id="m1" label="01 · Onboarding" width={393} height={852}><AndroidWrap><M1_Onboarding/></AndroidWrap></DCArtboard>
+          <DCArtboard id="m2-light" label="02a · Home / Map (light)" width={393} height={852}><AndroidWrap><M2_Home/></AndroidWrap></DCArtboard>
+          <DCArtboard id="m2-dark" label="02b · Home / Map (dark)" width={393} height={852}><AndroidWrap><M2_Home dark/></AndroidWrap></DCArtboard>
+          <DCArtboard id="m3" label="03 · Task detail" width={393} height={852}><AndroidWrap><M3_TaskDetail/></AndroidWrap></DCArtboard>
+          <DCArtboard id="m4-light" label="04a · Active task / nav (light)" width={393} height={852}><AndroidWrap><M4_ActiveTask/></AndroidWrap></DCArtboard>
+          <DCArtboard id="m4-dark" label="04b · Active task / nav (dark)" width={393} height={852}><AndroidWrap><M4_ActiveTask dark/></AndroidWrap></DCArtboard>
+          <DCArtboard id="m5-light" label="05a · Submit for review (light)" width={393} height={852}><AndroidWrap><M5_Submit/></AndroidWrap></DCArtboard>
+          <DCArtboard id="m5-dark" label="05b · Submit for review (dark)" width={393} height={852}><AndroidWrap><M5_Submit dark/></AndroidWrap></DCArtboard>
+          <DCArtboard id="m6" label="06 · Earnings & payment" width={393} height={852}><AndroidWrap><M6_Earnings/></AndroidWrap></DCArtboard>
+          <DCArtboard id="m7" label="07 · Notifications + messages" width={393} height={852}><AndroidWrap><M7_Messages/></AndroidWrap></DCArtboard>
+          <DCArtboard id="m8" label="08 · Profile" width={393} height={852}><AndroidWrap><M8_Profile/></AndroidWrap></DCArtboard>
+        </DCSection>
+      )}
+
+      {t.showLibrary && (
+        <DCSection id="lib" title="04 · Component library + tokens" subtitle="Buttons, chips, stats, fields, map controls, photo cards, alerts, palette, type">
+          <DCArtboard id="lib-1" label="Component library (one page)" width={1440} height={1240}><Library/></DCArtboard>
+        </DCSection>
+      )}
+
+      <TweaksPanel title="Tweaks">
+        <TweakSection title="Palette">
+          <TweakRadio label="Active" value={t.palette} onChange={v => setTweak('palette', v)} options={[
+            { value: 'forest', label: 'Forest' },
+            { value: 'peat', label: 'Peat' },
+            { value: 'teal', label: 'Teal' },
+          ]}/>
+          <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.7)', marginTop: 6, lineHeight: 1.45 }}>
+            Forest is the recommended primary. Peat is the brief's original direction. Teal is the institutional alternative.
+          </div>
+        </TweakSection>
+        <TweakSection title="Sections">
+          <TweakToggle label="Rationale" value={t.showRationale} onChange={v => setTweak('showRationale', v)}/>
+          <TweakToggle label="Web app screens" value={t.showWeb} onChange={v => setTweak('showWeb', v)}/>
+          <TweakToggle label="Mobile screens" value={t.showMobile} onChange={v => setTweak('showMobile', v)}/>
+          <TweakToggle label="Component library" value={t.showLibrary} onChange={v => setTweak('showLibrary', v)}/>
+        </TweakSection>
+      </TweaksPanel>
+    </DesignCanvas>
+  );
+}
+
+applyPalette(PG_DEFAULTS.palette, false);
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+</script>
+</body>
+</html>
