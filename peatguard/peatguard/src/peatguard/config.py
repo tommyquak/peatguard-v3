@@ -363,6 +363,16 @@ class MintPyConfig(BaseModel):
         default=0.7,
         description="Minimum coherence for reference point (auto-select fallback).",
     )
+    reference_yx: list[int] = Field(
+        default_factory=list,
+        description=(
+            "Fixed reference point as [row, col] pixel coordinates in the "
+            "radar grid. Takes priority over reference_lalo. Use this when "
+            "a lat/lon pin is unreliable because lat.rdr/lon.rdr lookup is "
+            "off (synthetic placeholder, etc). Empty list = fall through to "
+            "reference_lalo or auto-select."
+        ),
+    )
     tropospheric_correction: str = "pyaps"
     unwrap_error_correction: str = "bridging+phase_closure"
     network_modification: MintPyNetworkConfig = Field(default_factory=MintPyNetworkConfig)

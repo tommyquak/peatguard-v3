@@ -179,7 +179,7 @@ def export_velocity(
     mintpy_dir: Path,
     output_dir: Path,
     config: Optional[PeatGuardConfig] = None,
-    coherence_mask_threshold: float = 0.5,  # 0.5 for tropical peat; masks noisy low-coherence pixels
+    coherence_mask_threshold: float = 0.5,  # 0.5 required when unwrap_error_correction=no: below 0.5, unwrap errors contaminate velocity (+168 mm/yr spurious uplift observed on 2026-04-19)
 ) -> dict[str, Path]:
     """Export MintPy velocity and uncertainty as COG GeoTIFFs.
 

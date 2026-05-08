@@ -929,7 +929,8 @@ def run_timeseries_stage(
     #   Phase 2: Extract the selected reference coordinates, regenerate the config
     #            with ERA5 enabled AND the fixed reference, then run the full chain.
     ref_lalo = config.mintpy.reference_lalo
-    has_fixed_ref = ref_lalo and len(ref_lalo) == 2
+    ref_yx = getattr(config.mintpy, "reference_yx", None) or []
+    has_fixed_ref = (ref_lalo and len(ref_lalo) == 2) or (ref_yx and len(ref_yx) == 2)
 
     if era5_enabled and not has_fixed_ref:
         logger.info(
@@ -1552,6 +1553,59 @@ def run_analysis_stage(
             )
             products["water_mask"] = water_mask_path
             logger.info("Water mask generated: %s", water_mask_path)
+
+            # Subtract water from canal_mask: rivers and ponds are also
+            # low-backscatter and get flagged as canals by the threshold,
+            # which inflates proximity risk around every water body. A
+            # canal is a narrow drainage ditch; a river is not. Recompute
+            # canal_distance from the cleaned mask.
+            try:
+                from peatguard.analysis.canal_detect import compute_canal_distance
+                from peatguard.export.cog import write_cog, read_raster as _rr
+                cm_data, cm_meta = _rr(canal_mask_path)
+                wm_data, _ = _rr(water_mask_path)
+                canal_arr = cm_data[0].astype(bool)
+                water_arr = wm_data[0].astype(bool)
+                n_before = int(canal_arr.sum())
+                if water_arr.shape == canal_arr.shape:
+                    canal_clean = canal_arr & ~water_arr
+                else:
+                    logger.warning(
+                        "canal_mask %s != water_mask %s; skipping subtraction",
+                        canal_arr.shape, water_arr.shape,
+                    )
+                    canal_clean = canal_arr
+                n_after = int(canal_clean.sum())
+                logger.info(
+                    "Canal mask cleaned of water: %d -> %d pixels (%.1f%% removed)",
+                    n_before, n_after,
+                    100 * (n_before - n_after) / max(n_before, 1),
+                )
+                write_cog(
+                    data=canal_clean.astype(np.uint8),
+                    output_path=canal_mask_path,
+                    crs=cm_meta["crs"],
+                    transform=cm_meta["transform"],
+                    nodata=255,
+                    band_names=["canal_mask"],
+                    dtype="uint8",
+                )
+                pixel_res = abs(cm_meta["transform"][0])
+                dist_clean = compute_canal_distance(
+                    canal_clean, pixel_resolution_m=pixel_res,
+                )
+                write_cog(
+                    data=dist_clean.astype(np.float32),
+                    output_path=canal_dist_path,
+                    crs=cm_meta["crs"],
+                    transform=cm_meta["transform"],
+                    nodata=-9999.0,
+                    band_names=["canal_distance_m"],
+                    dtype="float32",
+                )
+                logger.info("canal_distance recomputed from water-cleaned mask")
+            except Exception as exc:
+                logger.warning("Canal-mask water subtraction failed: %s", exc)
         else:
             logger.info("Water mask disabled in config, skipping")
 

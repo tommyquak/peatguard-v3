@@ -281,8 +281,8 @@ def detect_canals(
     vv_path: Path,
     output_mask_path: Optional[Path] = None,
     output_distance_path: Optional[Path] = None,
-    percentile: float = 10.0,
-    min_length_pixels: int = 50,
+    percentile: float = 5.0,
+    min_length_pixels: int = 300,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Full canal detection pipeline from a VV backscatter GeoTIFF.
 

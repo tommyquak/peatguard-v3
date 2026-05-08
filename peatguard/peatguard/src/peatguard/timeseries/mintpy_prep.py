@@ -425,7 +425,7 @@ def generate_mintpy_config(
         )
 
     # Build reference point configuration.
-    # Priority: override_ref_yx (from two-phase ERA5 selection) > config lat/lon > auto.
+    # Priority: override_ref_yx > config yx (pixel coords) > config lat/lon > auto.
     if override_ref_yx is not None:
         ref_y, ref_x = override_ref_yx
         reference_point_block = (
@@ -436,6 +436,18 @@ def generate_mintpy_config(
         )
         logger.info(
             "Using locked reference point from phase 1: Y=%d, X=%d",
+            ref_y, ref_x,
+        )
+    elif config.mintpy.reference_yx and len(config.mintpy.reference_yx) == 2:
+        ref_y, ref_x = config.mintpy.reference_yx
+        reference_point_block = (
+            "    ## Fixed reference point (pixel coords) from YAML config\n"
+            f"    mintpy.reference.yx         = {ref_y}, {ref_x}\n"
+            f"    mintpy.reference.minCoherence = {config.mintpy.reference_min_coherence}\n"
+            "    mintpy.reference.maskFile    = no"
+        )
+        logger.info(
+            "Using fixed reference pixel from config: Y=%d, X=%d",
             ref_y, ref_x,
         )
     elif config.mintpy.reference_lalo and len(config.mintpy.reference_lalo) == 2:

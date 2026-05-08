@@ -76,7 +76,7 @@ risk_score:
   # and Dupuit equation approximation for canal drainage influence
   proximity_weight: 0.45       # canal proximity (indirect proxy)
   subsidence_weight: 0.55      # InSAR velocity (direct measurement)
-  max_influence_m: 1200.0      # canal influence radius (Hooijer: 1-1.5 km)
+  max_influence_m: 600.0       # canal influence radius (Hooijer: 1-1.5 km upper; 600 m keeps halos from flooding the AOI when canal detection is noisy)
   severe_velocity_mm_yr: -40.0 # velocity at max risk (Hooijer: 20-50 mm/yr)
   coherence_threshold: 0.7     # pixels below this coherence are nodata in
                                # canal_risk; stricter than processing level
@@ -124,10 +124,16 @@ storage:
   gcs_prefix: peatguard-data
 
 mintpy:
-  reference_lalo: []  # Auto-select highest-coherence pixel within data extent
+  # Pinned by PIXEL COORDS (not lat/lon) because our synthetic lat.rdr/lon.rdr
+  # placeholder is linear-interpolated and doesn't match the radar grid
+  # correctly, so reference.lalo lookups land on wrong pixels. Y=92, X=502
+  # is the high-coherence pixel that worked in the 2026-04-19 run
+  # (neighborhood temporal coherence 0.83 vs scene mean 0.14).
+  reference_lalo: []
+  reference_yx: [92, 502]
   reference_min_coherence: 0.7
   tropospheric_correction: pyaps  # ERA5 via PyAPS (requires CDS API key)
-  unwrap_error_correction: "phase_closure"  # bridging fails on fragmented conncomps; phase_closure uses triangle closure and is more robust
+  unwrap_error_correction: "phase_closure"  # with reference_yx pinned to a known conncomp-valid pixel, phase_closure completes; required to suppress +168 mm/yr unwrap-bias
   network_modification:
     coherence_based: true
     min_coherence: 0.3
