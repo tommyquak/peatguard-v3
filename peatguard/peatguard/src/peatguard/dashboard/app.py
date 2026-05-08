@@ -14,6 +14,7 @@ import os
 from pathlib import Path
 
 from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from titiler.core.factory import TilerFactory
@@ -117,13 +118,36 @@ PRODUCTS = {
 
 app = FastAPI(
     title="PeatGuard Dashboard",
-    description="Web map viewer for PeatGuard COG products",
+    description="Web map viewer for PeatGuard COG products + operator/villager REST API",
     version="0.1.0",
+)
+
+# Permissive CORS for local dev (Next.js on :3000, Expo on exp://*).
+# Tighten via PEATGUARD_API__CORS_ORIGINS for production.
+_cors_origins = os.environ.get(
+    "PEATGUARD_API__CORS_ORIGINS",
+    "http://localhost:3000,http://127.0.0.1:3000,http://localhost:8081,http://localhost:19006,http://localhost:19000",
+).split(",")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors_origins + ["*"],  # "*" included so Expo Go on a phone can hit dev backend
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # Mount TiTiler tile endpoints at /cog
 cog_tiler = TilerFactory(router_prefix="/cog")
 app.include_router(cog_tiler.router, prefix="/cog", tags=["COG Tiles"])
+
+# Mount operator + villager REST API at /api/v1
+from peatguard.api import api_router  # noqa: E402  (avoid circular import on dashboard.app)
+from peatguard.api.db import init_db
+from peatguard.api.seed import seed_if_empty
+
+init_db()
+seed_if_empty()
+app.include_router(api_router, prefix="/api/v1")
 
 # Jinja2 templates directory
 TEMPLATES_DIR = Path(__file__).parent / "templates"

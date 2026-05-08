@@ -1,0 +1,31 @@
+{
+  "expo": {
+    "name": "PeatGuard",
+    "slug": "peatguard-mobile",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "automatic",
+    "splash": {
+      "backgroundColor": "#1f4d3a"
+    },
+    "android": {
+      "package": "id.peatguard.mobile",
+      "permissions": ["CAMERA", "ACCESS_FINE_LOCATION", "ACCESS_COARSE_LOCATION"]
+    },
+    "ios": {
+      "bundleIdentifier": "id.peatguard.mobile",
+      "infoPlist": {
+        "NSCameraUsageDescription": "PeatGuard needs the camera to capture photo evidence of restoration work.",
+        "NSLocationWhenInUseUsageDescription": "PeatGuard uses your location to verify task completion."
+      },
+      "supportsTablet": false
+    },
+    "plugins": [
+      ["expo-camera", { "cameraPermission": "PeatGuard needs the camera to capture photo evidence of restoration work." }],
+      ["expo-location", { "locationAlwaysAndWhenInUsePermission": "PeatGuard uses your location to verify task completion." }]
+    ],
+    "extra": {
+      "apiBase": "http://localhost:8080"
+    }
+  }
+}

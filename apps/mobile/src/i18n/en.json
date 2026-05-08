@@ -1,0 +1,74 @@
+{
+  "app": "PeatGuard",
+  "onboarding": {
+    "title": "Peat protection work. Transparent pay.",
+    "subtitle": "Restoration work in your village. Photos prove it. PeatGuard pays you within minutes after the operator approves.",
+    "step1": "Choose language",
+    "step2": "Phone number & OTP",
+    "step3": "Pick your village",
+    "step4": "ID verification (NIK + selfie)",
+    "step4_sub": "Optional · unlocks higher payouts",
+    "continue": "Continue",
+    "skip": "Skip for now"
+  },
+  "home": {
+    "greeting": "Good morning",
+    "tasks_available": "{{n}} tasks available",
+    "tasks_near_you": "Tasks near you",
+    "pull_to_refresh": "Pull to refresh",
+    "offline_ok": "Offline OK"
+  },
+  "task": {
+    "accept": "Accept task",
+    "deadline": "Deadline",
+    "what_to_do": "What to do",
+    "examples": "Examples of accepted work",
+    "deliverables": "Required deliverables",
+    "payment_secured": "Payment is secured. Once the operator approves your photos, money lands in your DANA wallet in ≈ 1 minute.",
+    "ask": "Ask"
+  },
+  "active": {
+    "arrived": "Arrived on site",
+    "take_photo": "Take {{phase}} photo",
+    "before": "before",
+    "during": "during",
+    "after": "after",
+    "voice_note": "Voice note"
+  },
+  "submit": {
+    "title": "Submit for review",
+    "ready": "Ready",
+    "auto_checks": "Auto-checks",
+    "save_draft": "Save draft",
+    "submit": "Submit for review",
+    "no_signal": "No signal? Your submission is saved on this phone and uploads automatically when you're back online."
+  },
+  "wallet": {
+    "title": "Your earnings",
+    "total_approved": "Total approved",
+    "this_month": "This month",
+    "pending": "Pending",
+    "withdraw": "Withdraw to DANA",
+    "history": "Task history"
+  },
+  "messages": {
+    "title": "Messages",
+    "operator_subtitle": "Operator · System",
+    "online": "Online · usually replies within an hour",
+    "compose": "Type a message…"
+  },
+  "profile": {
+    "title": "My profile",
+    "tasks_done": "tasks done",
+    "approval_rate": "approval rate",
+    "total_paid": "total paid",
+    "settings": {
+      "verification": "Verification & documents",
+      "payouts": "Payout accounts",
+      "privacy": "Privacy & data",
+      "notifications": "Notifications",
+      "language": "Language"
+    },
+    "sign_out": "Sign out"
+  }
+}

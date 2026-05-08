@@ -1,0 +1,43 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html, body {
+  background: theme('colors.pg.surface');
+  color: theme('colors.pg.ink');
+}
+
+/* Mono font feature settings: tabular figures for numbers/timestamps. */
+.font-mono { font-feature-settings: 'tnum'; letter-spacing: -0.005em; }
+
+/* Striped placeholder for raster GeoTIFF previews (TiTiler will fill these once wired). */
+.pg-raster-stub {
+  background-image:
+    repeating-linear-gradient(135deg, rgba(31,77,58,0.12) 0 4px, transparent 4px 9px),
+    radial-gradient(circle at 30% 40%, rgba(189,0,38,0.18), transparent 50%),
+    radial-gradient(circle at 70% 65%, rgba(87,167,115,0.20), transparent 55%),
+    linear-gradient(180deg, #d8d3c0, #c5beb0);
+  position: relative;
+}
+
+.pg-raster-stub::after {
+  content: attr(data-layer);
+  position: absolute; left: 8px; bottom: 6px;
+  font-family: theme('fontFamily.mono'); font-size: 10px;
+  color: rgba(20,20,15,0.65); background: rgba(255,255,255,0.7);
+  padding: 2px 6px; border-radius: 3px;
+  letter-spacing: -0.01em;
+}
+
+/* Dotted background for the map "draw" area in W4 task creator. */
+.pg-draw-grid {
+  background-image:
+    linear-gradient(to right, rgba(20,20,15,0.06) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(20,20,15,0.06) 1px, transparent 1px);
+  background-size: 24px 24px;
+}
+
+/* Subtle scrollbar */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb { background: theme('colors.pg.border-strong'); border-radius: 5px; }
+::-webkit-scrollbar-thumb:hover { background: theme('colors.pg.ink-muted'); }

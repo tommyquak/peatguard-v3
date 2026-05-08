@@ -64,6 +64,7 @@ dashboard = [
     "uvicorn[standard]>=0.27.0",
     "titiler.core>=0.18.0",
     "jinja2>=3.1.0",
+    "python-multipart>=0.0.9",
 ]
 
 [project.scripts]

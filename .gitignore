@@ -39,3 +39,11 @@ catalog.db
 scratch/
 output/
 *.log
+
+# Next.js / Expo build outputs
+apps/web/.next/
+apps/web/out/
+apps/mobile/.expo/
+apps/mobile/dist/
+.peatguard/
+apps/*/tsconfig.tsbuildinfo

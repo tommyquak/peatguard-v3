@@ -1,0 +1,74 @@
+{
+  "app": "PeatGuard",
+  "onboarding": {
+    "title": "Kerja lindungi gambut. Bayaran transparan.",
+    "subtitle": "Kerja restorasi di desa Anda. Foto sebagai bukti. PeatGuard membayar dalam hitungan menit setelah operator menyetujui.",
+    "step1": "Pilih bahasa",
+    "step2": "Nomor HP & OTP",
+    "step3": "Pilih desa Anda",
+    "step4": "Verifikasi NIK + selfie",
+    "step4_sub": "Opsional · membuka bayaran lebih tinggi",
+    "continue": "Lanjut",
+    "skip": "Lewati"
+  },
+  "home": {
+    "greeting": "Selamat pagi",
+    "tasks_available": "{{n}} tugas tersedia",
+    "tasks_near_you": "Tugas dekat Anda",
+    "pull_to_refresh": "Tarik untuk refresh",
+    "offline_ok": "Offline OK"
+  },
+  "task": {
+    "accept": "Terima tugas",
+    "deadline": "Batas waktu",
+    "what_to_do": "Apa yang dikerjakan",
+    "examples": "Contoh hasil yang diterima",
+    "deliverables": "Yang harus dikirim",
+    "payment_secured": "Pembayaran dijamin. Begitu operator menyetujui foto, uang masuk DANA Anda kira-kira 1 menit.",
+    "ask": "Tanya"
+  },
+  "active": {
+    "arrived": "Sudah di lokasi",
+    "take_photo": "Ambil foto {{phase}}",
+    "before": "sebelum",
+    "during": "sedang",
+    "after": "sesudah",
+    "voice_note": "Catatan suara"
+  },
+  "submit": {
+    "title": "Kirim untuk review",
+    "ready": "Siap",
+    "auto_checks": "Pemeriksaan otomatis",
+    "save_draft": "Simpan draft",
+    "submit": "Kirim untuk review",
+    "no_signal": "Tidak ada sinyal? Pengiriman tersimpan di HP dan akan otomatis terkirim saat online."
+  },
+  "wallet": {
+    "title": "Pendapatan Anda",
+    "total_approved": "Total disetujui",
+    "this_month": "Bulan ini",
+    "pending": "Menunggu",
+    "withdraw": "Tarik ke DANA",
+    "history": "Riwayat tugas"
+  },
+  "messages": {
+    "title": "Pesan",
+    "operator_subtitle": "Operator · Sistem",
+    "online": "Online · biasanya membalas dalam 1 jam",
+    "compose": "Ketik pesan…"
+  },
+  "profile": {
+    "title": "Profil saya",
+    "tasks_done": "tugas selesai",
+    "approval_rate": "tingkat persetujuan",
+    "total_paid": "total dibayar",
+    "settings": {
+      "verification": "Verifikasi & dokumen",
+      "payouts": "Akun pembayaran",
+      "privacy": "Privasi & data",
+      "notifications": "Notifikasi",
+      "language": "Bahasa"
+    },
+    "sign_out": "Keluar"
+  }
+}
